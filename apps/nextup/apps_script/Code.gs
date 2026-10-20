@@ -9,6 +9,11 @@
  *   MAX_EVENTS       how many meetings to send                       (default 5)
  *   LOOKAHEAD_HOURS  how far ahead to look                           (default 168)
  *
+ * If the tunnel host is behind Cloudflare Access, also set the service
+ * token (sent as CF-Access-Client-Id / CF-Access-Client-Secret):
+ *   CF_ACCESS_CLIENT_ID
+ *   CF_ACCESS_CLIENT_SECRET
+ *
  * Run installTrigger() once to push every 5 minutes.
  */
 
@@ -93,7 +98,7 @@ function pushNextUp() {
   const resp = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + token },
+    headers: pushHeaders_(props, token),
     payload: JSON.stringify({ generated_at: iso_(now), events: events }),
     muteHttpExceptions: true,
   });
@@ -101,6 +106,17 @@ function pushNextUp() {
   if (code !== 204) {
     throw new Error('Push failed: HTTP ' + code + ' ' + resp.getContentText());
   }
+}
+
+function pushHeaders_(props, token) {
+  const headers = { Authorization: 'Bearer ' + token };
+  const cfId = props.getProperty('CF_ACCESS_CLIENT_ID');
+  const cfSecret = props.getProperty('CF_ACCESS_CLIENT_SECRET');
+  if (cfId && cfSecret) {
+    headers['CF-Access-Client-Id'] = cfId;
+    headers['CF-Access-Client-Secret'] = cfSecret;
+  }
+  return headers;
 }
 
 /** Replaces any existing pushNextUp trigger with one that runs every 5 minutes. */
