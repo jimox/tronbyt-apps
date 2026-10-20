@@ -33,12 +33,12 @@ BAR_HEIGHT = 2
 # Fanatics flag, hand-drawn from the logo for the 7px footer row. The
 # progress bar takes the rest of the row.
 FLAG = [
-    "X...XXXXX",
+    "XX...XXXX",
     ".XXXXXXXX",
-    ".XX......",
-    "...XXXXX.",
+    ".XXX.....",
+    ".........",
+    "..XXXXXX.",
     "...XXX...",
-    "...X.....",
     "....X....",
 ]
 FLAG_COLOR = "#E63E30"
