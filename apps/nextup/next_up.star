@@ -19,9 +19,6 @@ CACHE_SECONDS = 60
 # The Apps Script pushes every 5 minutes; flag the data after a few misses.
 STALE_MINUTES = 15
 
-# Keep showing a meeting this long after it starts before moving on.
-GRACE_MINUTES = 10
-
 # The countdown bar drains over this window before a meeting starts.
 COUNTDOWN_BAR_MINUTES = 60
 
@@ -30,25 +27,31 @@ HEADER_HEIGHT = 9
 BODY_HEIGHT = 16
 BAR_HEIGHT = 2
 
-# Fanatics flag, hand-drawn from the logo for the 7px footer row. The
-# progress bar takes the rest of the row.
+# Fanatics flag, sampled from the logo at 13x11 and shown left of the title.
+# X = full brightness, o = dim (smooths the curves), . = off.
 FLAG = [
-    "XX...XXXX.",
-    ".XXXXXXXX.",
-    ".XXX......",
-    "..X.......",
-    "...XXXXXX.",
-    "....XXX...",
-    ".....X....",
+    "......oXXXXX.",
+    "oXXXXXXXXXXXX",
+    ".XXXXXXXXXXX.",
+    ".oXXXXo......",
+    ".......oXXo..",
+    "...oXXXXXXo..",
+    "...oXXXXXX...",
+    "....XXo......",
+    ".....X.......",
+    ".....oo......",
+    "......o......",
 ]
 FLAG_COLOR = "#E63E30"
+FLAG_DIM = "#5C1913"
 FLAG_GAP = 2
 
 CONTENT_WIDTH = 60
-BAR_WIDTH = CONTENT_WIDTH - len(FLAG[0]) - FLAG_GAP
+BAR_WIDTH = CONTENT_WIDTH
+TITLE_WIDTH = CONTENT_WIDTH - len(FLAG[0]) - FLAG_GAP
 
 # Rough tb-8 capacity of the two-line title area; longer titles scroll.
-TITLE_FIT_CHARS = 22
+TITLE_FIT_CHARS = 16
 
 # The header pulses from PULSE_BEFORE_MINUTES before a meeting starts until
 # PULSE_AFTER_MINUTES after.
@@ -91,19 +94,29 @@ def main(config):
     return render_event(event, now, tz, stale)
 
 def next_event(events, now):
-    cutoff = now - time.parse_duration("%dm" % GRACE_MINUTES)
+    """The meeting in progress (latest start if several overlap), else the
+    next one to start."""
+    active = None
+    upcoming = None
     for ev in events:
         start = time.parse_time(ev["start"])
         end = time.parse_time(ev["end"])
-        if end <= now or start < cutoff:
+        if end <= now:
             continue
-        return {
-            "title": ev.get("title") or "(no title)",
-            "start": start,
-            "end": end,
-            "color": ev.get("color") or "#D50000",
-        }
-    return None
+        if start <= now:
+            if not active or start > active["start"]:
+                active = to_event(ev, start, end)
+        elif not upcoming or start < upcoming["start"]:
+            upcoming = to_event(ev, start, end)
+    return active or upcoming
+
+def to_event(ev, start, end):
+    return {
+        "title": ev.get("title") or "(no title)",
+        "start": start,
+        "end": end,
+        "color": ev.get("color") or "#D50000",
+    }
 
 def render_event(ev, now, tz, stale):
     start = ev["start"].in_location(tz)
@@ -134,8 +147,15 @@ def render_event(ev, now, tz, stale):
     screen = render.Column(
         children = [
             top,
-            render.Padding(pad = (2, 0, 0, 0), child = title(ev["title"])),
-            render.Padding(pad = (2, 0, 0, 0), child = footer(progress, bar_color)),
+            render.Padding(pad = (2, 1, 0, 0), child = render.Row(
+                cross_align = "center",
+                children = [
+                    render.Box(width = len(FLAG[0]), height = BODY_HEIGHT, child = flag()),
+                    render.Box(width = FLAG_GAP, height = 1),
+                    title(ev["title"]),
+                ],
+            )),
+            render.Padding(pad = (2, 3, 0, 0), child = bar(progress, bar_color)),
         ],
     )
 
@@ -183,25 +203,15 @@ def run(text, font, color):
     return render.Text(text, font = font, color = color)
 
 def title(text):
-    wrapped = render.WrappedText(text, width = CONTENT_WIDTH, font = "tb-8", color = "#ffffff")
+    wrapped = render.WrappedText(text, width = TITLE_WIDTH, font = "tb-8", color = "#ffffff")
     if len(text) <= TITLE_FIT_CHARS:
-        return render.Box(width = CONTENT_WIDTH, height = BODY_HEIGHT, child = wrapped)
+        return render.Box(width = TITLE_WIDTH, height = BODY_HEIGHT, child = wrapped)
     return render.Marquee(
-        width = CONTENT_WIDTH,
+        width = TITLE_WIDTH,
         height = BODY_HEIGHT,
         scroll_direction = "vertical",
         offset_start = 0,
         child = wrapped,
-    )
-
-def footer(progress, color):
-    return render.Row(
-        cross_align = "end",
-        children = [
-            flag(),
-            render.Box(width = FLAG_GAP, height = 1),
-            bar(progress, color),
-        ],
     )
 
 def flag():
@@ -211,6 +221,8 @@ def flag():
         for ch in line.elems():
             if ch == "X":
                 cells.append(render.Box(width = 1, height = 1, color = FLAG_COLOR))
+            elif ch == "o":
+                cells.append(render.Box(width = 1, height = 1, color = FLAG_DIM))
             else:
                 cells.append(render.Box(width = 1, height = 1))
         rows.append(render.Row(children = cells))

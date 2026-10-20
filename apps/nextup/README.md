@@ -36,10 +36,17 @@ calendar is read by Apps Script and pushed out, rather than pulled.
 
 ## Display
 
-- Countdown ("in 12m", "NOW" in red), title (scrolls), time range.
-- The left bar is the event's color.
-- "OLD" in the corner means the last push was over 15 minutes ago.
-- A meeting stays up for 10 minutes after it starts, then the next one shows.
+- Header in the event's color: countdown and start time ("in 12m · 2:30pm"),
+  or "NOW · til 3:00pm" during the meeting. It pulses from 5 minutes before
+  the start until 1 minute after.
+- Fanatics flag on the left; title wraps to two lines and scrolls if longer.
+- Bottom bar: fills over the last hour before a meeting, then shows progress
+  through it.
+- An orange dot in the bottom-right corner means the last push was over 15
+  minutes ago.
+- A meeting in progress stays up until it ends. If meetings overlap, the one
+  that started most recently is shown. Otherwise the next upcoming meeting is
+  shown.
 
 ## Local render
 
