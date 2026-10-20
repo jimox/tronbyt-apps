@@ -58,8 +58,12 @@ TITLE_FIT_CHARS = 16
 PULSE_BEFORE_MINUTES = 5
 PULSE_AFTER_MINUTES = 1
 
-# Frames per half-cycle of the pulse (Root delay is 80ms).
-PULSE_FRAMES = 8
+# Milliseconds per frame. Long titles scroll 1px per frame, so this sets the
+# scroll speed (100ms = 10px/s).
+FRAME_MS = 100
+
+# Frames per half-cycle of the pulse (~600ms at FRAME_MS).
+PULSE_FRAMES = 6
 
 # Used for the am/pm suffix and "til" so the header fits in 64px.
 SMALL_FONT = "tom-thumb"
@@ -74,18 +78,30 @@ def main(config):
     url = config.str("feed_url", "") or DEFAULT_FEED_URL
     tz = config.get("$tz", DEFAULT_TZ)
 
+    # Starting-only mode renders only inside the pulse window and nothing
+    # otherwise, so Tronbyt's Auto Pin pins the app for exactly that window.
+    # It never renders error messages, which would also get pinned.
+    starting_only = config.bool("starting_only", False)
+
     resp = http.get(url, ttl_seconds = CACHE_SECONDS)
-    if resp.status_code == 404:
-        return message("No data from Apps Script yet")
     if resp.status_code != 200:
+        if starting_only:
+            return []
+        if resp.status_code == 404:
+            return message("No data from Apps Script yet")
         return message("pi-api: HTTP %d" % resp.status_code)
 
     body = resp.json()
     now = time.now().in_location(tz)
     received = time.parse_time(body["received_at"])
     stale = now - received > time.parse_duration("%dm" % STALE_MINUTES)
+    events = body["data"].get("events", [])
 
-    event = next_event(body["data"].get("events", []), now)
+    if starting_only:
+        event = starting_event(events, now)
+        return render_event(event, now, tz, stale) if event else []
+
+    event = next_event(events, now)
     if not event:
         # If pushes stopped, the list drains to empty; say so instead of
         # silently hiding.
@@ -109,6 +125,21 @@ def next_event(events, now):
         elif not upcoming or start < upcoming["start"]:
             upcoming = to_event(ev, start, end)
     return active or upcoming
+
+def starting_event(events, now):
+    """The meeting whose pulse window contains now (soonest start if several),
+    even if another meeting is still in progress."""
+    found = None
+    for ev in events:
+        start = time.parse_time(ev["start"])
+        end = time.parse_time(ev["end"])
+        if in_pulse_window(start, now) and end > now and (not found or start < found["start"]):
+            found = to_event(ev, start, end)
+    return found
+
+def in_pulse_window(start, now):
+    return (start - now <= time.parse_duration("%dm" % PULSE_BEFORE_MINUTES) and
+            now - start < time.parse_duration("%dm" % PULSE_AFTER_MINUTES))
 
 def to_event(ev, start, end):
     return {
@@ -134,10 +165,7 @@ def render_event(ev, now, tz, stale):
         progress = 1 - mins / COUNTDOWN_BAR_MINUTES if mins < COUNTDOWN_BAR_MINUTES else 0
         bar_color = "#ffffff" if mins < 5 else "#888888"
 
-    pulsing = (start - now <= time.parse_duration("%dm" % PULSE_BEFORE_MINUTES) and
-               now - start < time.parse_duration("%dm" % PULSE_AFTER_MINUTES))
-
-    if pulsing:
+    if in_pulse_window(start, now):
         frames = [header(left, right, color)] * PULSE_FRAMES
         frames += [header(left, right, dim(color, 0.55))] * PULSE_FRAMES
         top = render.Animation(children = frames)
@@ -171,7 +199,7 @@ def render_event(ev, now, tz, stale):
             ],
         )
 
-    return render.Root(delay = 80, child = screen)
+    return render.Root(delay = FRAME_MS, child = screen)
 
 def header(left, right, color):
     """right is a list of (text, font) runs, bottom-aligned."""
@@ -284,6 +312,13 @@ def get_schema():
                 desc = "pi-api feed URL.",
                 icon = "link",
                 default = DEFAULT_FEED_URL,
+            ),
+            schema.Toggle(
+                id = "starting_only",
+                name = "Only when starting",
+                desc = "Show only from 5 min before a meeting starts until 1 min after. Pair with Tronbyt's Auto Pin.",
+                icon = "thumbtack",
+                default = False,
             ),
         ],
     )

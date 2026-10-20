@@ -48,6 +48,20 @@ calendar is read by Apps Script and pushed out, rather than pulled.
   that started most recently is shown. Otherwise the next upcoming meeting is
   shown.
 
+## Pinning while a meeting starts
+
+The **Only when starting** setting makes the app render only from 5 minutes
+before a meeting starts until 1 minute after (the same window as the header
+pulse), and render nothing otherwise, including on errors. Tronbyt's
+**Auto Pin** pins an app while it renders and unpins it when it renders
+nothing, so together they pin the meeting to the screen for that window.
+
+Typical setup: install Next Up twice.
+
+1. Normal install, in regular rotation.
+2. Second install with **Only when starting** on, **Auto Pin** on, and a
+   1-minute render interval so the pin starts and ends promptly.
+
 ## Local render
 
 ```
