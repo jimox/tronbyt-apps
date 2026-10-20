@@ -50,7 +50,12 @@ BAR_WIDTH = CONTENT_WIDTH - len(FLAG[0]) - FLAG_GAP
 # Rough tb-8 capacity of the two-line title area; longer titles scroll.
 TITLE_FIT_CHARS = 22
 
-# Frames per half-cycle of the NOW pulse (Root delay is 80ms).
+# The header pulses from PULSE_BEFORE_MINUTES before a meeting starts until
+# PULSE_AFTER_MINUTES after.
+PULSE_BEFORE_MINUTES = 5
+PULSE_AFTER_MINUTES = 1
+
+# Frames per half-cycle of the pulse (Root delay is 80ms).
 PULSE_FRAMES = 8
 
 # Used for the am/pm suffix and "til" so the header fits in 64px.
@@ -116,7 +121,10 @@ def render_event(ev, now, tz, stale):
         progress = 1 - mins / COUNTDOWN_BAR_MINUTES if mins < COUNTDOWN_BAR_MINUTES else 0
         bar_color = "#ffffff" if mins < 5 else "#888888"
 
-    if started:
+    pulsing = (start - now <= time.parse_duration("%dm" % PULSE_BEFORE_MINUTES) and
+               now - start < time.parse_duration("%dm" % PULSE_AFTER_MINUTES))
+
+    if pulsing:
         frames = [header(left, right, color)] * PULSE_FRAMES
         frames += [header(left, right, dim(color, 0.55))] * PULSE_FRAMES
         top = render.Animation(children = frames)
