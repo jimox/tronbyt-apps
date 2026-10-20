@@ -37,6 +37,12 @@ TITLE_FIT_CHARS = 22
 # Frames per half-cycle of the NOW pulse (Root delay is 80ms).
 PULSE_FRAMES = 8
 
+# Used for the am/pm suffix and "til" so the header fits in 64px.
+SMALL_FONT = "tom-thumb"
+
+# Pseudo-font for header runs: one blank pixel per character.
+GAP = "gap"
+
 TRACK_COLOR = "#222222"
 STALE_COLOR = "#ff8800"
 
@@ -85,7 +91,7 @@ def render_event(ev, now, tz, stale):
     started = start <= now
 
     if started:
-        left, right = "NOW", "til " + clock(end)
+        left, right = "NOW", [("til", SMALL_FONT), (" ", GAP)] + clock(end)
         progress = (now - start).seconds / (end - start).seconds
         bar_color = color
     else:
@@ -124,23 +130,33 @@ def render_event(ev, now, tz, stale):
     return render.Root(delay = 80, child = screen)
 
 def header(left, right, color):
+    """right is a list of (text, font) runs, bottom-aligned."""
     fg = text_color(color)
     return render.Box(
         width = WIDTH,
         height = HEADER_HEIGHT,
         color = color,
         child = render.Padding(
-            pad = (2, 1, 2, 0),
+            pad = (1, 1, 1, 0),
             child = render.Row(
                 expanded = True,
                 main_align = "space_between",
+                cross_align = "end",
                 children = [
                     render.Text(left, font = "tb-8", color = fg),
-                    render.Text(right, font = "tb-8", color = fg),
+                    render.Row(
+                        cross_align = "end",
+                        children = [run(t, f, fg) for t, f in right],
+                    ),
                 ],
             ),
         ),
     )
+
+def run(text, font, color):
+    if font == GAP:
+        return render.Box(width = len(text), height = 1)
+    return render.Text(text, font = font, color = color)
 
 def title(text):
     wrapped = render.WrappedText(text, width = BAR_WIDTH, font = "tb-8", color = "#ffffff")
@@ -173,7 +189,8 @@ def countdown(start, mins):
     return start.format("Mon")
 
 def clock(t):
-    return t.format("3:04")
+    """Time as (text, font) runs: digits in tb-8, a smaller am/pm suffix."""
+    return [(t.format("3:04"), "tb-8"), (t.format("pm"), SMALL_FONT)]
 
 def pad2(n):
     return ("0" + str(n))[-2:]
