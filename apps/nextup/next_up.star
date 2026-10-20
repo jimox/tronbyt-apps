@@ -22,6 +22,24 @@ STALE_MINUTES = 15
 # Keep showing a meeting this long after it starts before moving on.
 GRACE_MINUTES = 10
 
+# The countdown bar drains over this window before a meeting starts.
+COUNTDOWN_BAR_MINUTES = 60
+
+WIDTH = 64
+HEADER_HEIGHT = 9
+BODY_HEIGHT = 16
+BAR_WIDTH = 60
+BAR_HEIGHT = 2
+
+# Rough tb-8 capacity of the two-line title area; longer titles scroll.
+TITLE_FIT_CHARS = 22
+
+# Frames per half-cycle of the NOW pulse (Root delay is 80ms).
+PULSE_FRAMES = 8
+
+TRACK_COLOR = "#222222"
+STALE_COLOR = "#ff8800"
+
 def main(config):
     url = config.str("feed_url", "") or DEFAULT_FEED_URL
     tz = config.get("$tz", DEFAULT_TZ)
@@ -60,68 +78,125 @@ def next_event(events, now):
         }
     return None
 
-def countdown(start, now):
-    mins = int((start - now).minutes)
-    if mins <= 0:
-        return "NOW"
-    if mins < 60:
-        return "in %dm" % mins
-    if mins < 10 * 60:
-        return "in %dh%02dm" % (mins // 60, mins % 60)
-    return start.format("Mon 3:04")
-
 def render_event(ev, now, tz, stale):
     start = ev["start"].in_location(tz)
     end = ev["end"].in_location(tz)
-    when = countdown(start, now)
+    color = ev["color"]
+    started = start <= now
 
-    footer = [
-        render.Text(
-            "%s-%s" % (start.format("3:04"), end.format("3:04")),
-            font = "tom-thumb",
-            color = "#888888",
-        ),
-    ]
+    if started:
+        left, right = "NOW", "til " + clock(end)
+        progress = (now - start).seconds / (end - start).seconds
+        bar_color = color
+    else:
+        mins = int((start - now).minutes)
+        left, right = countdown(start, mins), clock(start)
+        progress = 1 - mins / COUNTDOWN_BAR_MINUTES if mins < COUNTDOWN_BAR_MINUTES else 0
+        bar_color = "#ffffff" if mins < 5 else "#888888"
+
+    if started:
+        frames = [header(left, right, color)] * PULSE_FRAMES
+        frames += [header(left, right, dim(color, 0.55))] * PULSE_FRAMES
+        top = render.Animation(children = frames)
+    else:
+        top = header(left, right, color)
+
+    screen = render.Column(
+        children = [
+            top,
+            render.Padding(pad = (2, 1, 0, 0), child = title(ev["title"])),
+            render.Padding(pad = (2, 3, 0, 0), child = bar(progress, bar_color)),
+        ],
+    )
+
     if stale:
-        footer.append(render.Text("OLD", font = "tom-thumb", color = "#ff8800"))
-
-    return render.Root(
-        delay = 80,
-        child = render.Row(
+        # Small orange corner dot: last push is older than STALE_MINUTES.
+        screen = render.Stack(
             children = [
-                render.Box(width = 2, height = 32, color = ev["color"]),
+                screen,
                 render.Padding(
-                    pad = (2, 1, 0, 0),
-                    child = render.Column(
-                        children = [
-                            render.Text(
-                                when,
-                                font = "6x13",
-                                color = "#ff4444" if when == "NOW" else "#ffffff",
-                            ),
-                            render.Marquee(
-                                width = 60,
-                                child = render.Text(ev["title"], font = "tb-8"),
-                            ),
-                            render.Box(
-                                width = 60,
-                                height = 6,
-                                child = render.Row(
-                                    expanded = True,
-                                    main_align = "space_between",
-                                    children = footer,
-                                ),
-                            ),
-                        ],
-                    ),
+                    pad = (WIDTH - 3, 29, 0, 0),
+                    child = render.Box(width = 3, height = 3, color = STALE_COLOR),
                 ),
             ],
+        )
+
+    return render.Root(delay = 80, child = screen)
+
+def header(left, right, color):
+    fg = text_color(color)
+    return render.Box(
+        width = WIDTH,
+        height = HEADER_HEIGHT,
+        color = color,
+        child = render.Padding(
+            pad = (2, 1, 2, 0),
+            child = render.Row(
+                expanded = True,
+                main_align = "space_between",
+                children = [
+                    render.Text(left, font = "tb-8", color = fg),
+                    render.Text(right, font = "tb-8", color = fg),
+                ],
+            ),
         ),
     )
 
+def title(text):
+    wrapped = render.WrappedText(text, width = BAR_WIDTH, font = "tb-8", color = "#ffffff")
+    if len(text) <= TITLE_FIT_CHARS:
+        return render.Box(width = BAR_WIDTH, height = BODY_HEIGHT, child = wrapped)
+    return render.Marquee(
+        width = BAR_WIDTH,
+        height = BODY_HEIGHT,
+        scroll_direction = "vertical",
+        offset_start = 0,
+        child = wrapped,
+    )
+
+def bar(progress, color):
+    fill = int(BAR_WIDTH * max(0, min(1, progress)))
+    children = []
+    if fill > 0:
+        children.append(render.Box(width = fill, height = BAR_HEIGHT, color = color))
+    if fill < BAR_WIDTH:
+        children.append(render.Box(width = BAR_WIDTH - fill, height = BAR_HEIGHT, color = TRACK_COLOR))
+    return render.Row(children = children)
+
+def countdown(start, mins):
+    if mins <= 0:
+        return "now"
+    if mins < 60:
+        return "in %dm" % mins
+    if mins < 10 * 60:
+        return "%dh %sm" % (mins // 60, pad2(mins % 60))
+    return start.format("Mon")
+
+def clock(t):
+    return t.format("3:04")
+
+def pad2(n):
+    return ("0" + str(n))[-2:]
+
+def parse_hex(hex_color):
+    h = hex_color.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+def text_color(bg):
+    r, g, b = parse_hex(bg)
+    return "#000000" if 0.299 * r + 0.587 * g + 0.114 * b > 150 else "#ffffff"
+
+def dim(hex_color, factor):
+    digits = "0123456789abcdef"
+    out = "#"
+    for c in parse_hex(hex_color):
+        v = int(c * factor)
+        out += digits[v // 16] + digits[v % 16]
+    return out
+
 def message(text):
     return render.Root(
-        child = render.WrappedText(text, font = "tb-8", color = "#ff8800"),
+        child = render.WrappedText(text, font = "tb-8", color = STALE_COLOR),
     )
 
 def get_schema():
