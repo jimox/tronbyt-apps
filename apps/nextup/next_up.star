@@ -28,8 +28,24 @@ COUNTDOWN_BAR_MINUTES = 60
 WIDTH = 64
 HEADER_HEIGHT = 9
 BODY_HEIGHT = 16
-BAR_WIDTH = 60
 BAR_HEIGHT = 2
+
+# Fanatics flag, hand-drawn from the logo for the 7px footer row. The
+# progress bar takes the rest of the row.
+FLAG = [
+    "X...XXXXX",
+    ".XXXXXXXX",
+    ".XX......",
+    "...XXXXX.",
+    "...XXX...",
+    "...X.....",
+    "....X....",
+]
+FLAG_COLOR = "#E63E30"
+FLAG_GAP = 2
+
+CONTENT_WIDTH = 60
+BAR_WIDTH = CONTENT_WIDTH - len(FLAG[0]) - FLAG_GAP
 
 # Rough tb-8 capacity of the two-line title area; longer titles scroll.
 TITLE_FIT_CHARS = 22
@@ -110,8 +126,8 @@ def render_event(ev, now, tz, stale):
     screen = render.Column(
         children = [
             top,
-            render.Padding(pad = (2, 1, 0, 0), child = title(ev["title"])),
-            render.Padding(pad = (2, 3, 0, 0), child = bar(progress, bar_color)),
+            render.Padding(pad = (2, 0, 0, 0), child = title(ev["title"])),
+            render.Padding(pad = (2, 0, 0, 0), child = footer(progress, bar_color)),
         ],
     )
 
@@ -159,16 +175,38 @@ def run(text, font, color):
     return render.Text(text, font = font, color = color)
 
 def title(text):
-    wrapped = render.WrappedText(text, width = BAR_WIDTH, font = "tb-8", color = "#ffffff")
+    wrapped = render.WrappedText(text, width = CONTENT_WIDTH, font = "tb-8", color = "#ffffff")
     if len(text) <= TITLE_FIT_CHARS:
-        return render.Box(width = BAR_WIDTH, height = BODY_HEIGHT, child = wrapped)
+        return render.Box(width = CONTENT_WIDTH, height = BODY_HEIGHT, child = wrapped)
     return render.Marquee(
-        width = BAR_WIDTH,
+        width = CONTENT_WIDTH,
         height = BODY_HEIGHT,
         scroll_direction = "vertical",
         offset_start = 0,
         child = wrapped,
     )
+
+def footer(progress, color):
+    return render.Row(
+        cross_align = "end",
+        children = [
+            flag(),
+            render.Box(width = FLAG_GAP, height = 1),
+            bar(progress, color),
+        ],
+    )
+
+def flag():
+    rows = []
+    for line in FLAG:
+        cells = []
+        for ch in line.elems():
+            if ch == "X":
+                cells.append(render.Box(width = 1, height = 1, color = FLAG_COLOR))
+            else:
+                cells.append(render.Box(width = 1, height = 1))
+        rows.append(render.Row(children = cells))
+    return render.Column(children = rows)
 
 def bar(progress, color):
     fill = int(BAR_WIDTH * max(0, min(1, progress)))
