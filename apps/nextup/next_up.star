@@ -71,6 +71,11 @@ SMALL_FONT = "tom-thumb"
 # Pseudo-font for header runs: one blank pixel per character.
 GAP = "gap"
 
+# Header bar brightness relative to the event color. Full-brightness bars
+# (especially green) glare on the LEDs and wash out the white text.
+HEADER_BRIGHTNESS = 0.5
+PULSE_BRIGHTNESS = 0.25
+
 TRACK_COLOR = "#222222"
 STALE_COLOR = "#ff8800"
 
@@ -166,11 +171,11 @@ def render_event(ev, now, tz, stale):
         bar_color = "#ffffff" if mins < 5 else "#888888"
 
     if in_pulse_window(start, now):
-        frames = [header(left, right, color)] * PULSE_FRAMES
-        frames += [header(left, right, dim(color, 0.55))] * PULSE_FRAMES
+        frames = [header(left, right, dim(color, HEADER_BRIGHTNESS))] * PULSE_FRAMES
+        frames += [header(left, right, dim(color, PULSE_BRIGHTNESS))] * PULSE_FRAMES
         top = render.Animation(children = frames)
     else:
-        top = header(left, right, color)
+        top = header(left, right, dim(color, HEADER_BRIGHTNESS))
 
     screen = render.Column(
         children = [
@@ -203,7 +208,7 @@ def render_event(ev, now, tz, stale):
 
 def header(left, right, color):
     """right is a list of (text, font) runs, bottom-aligned."""
-    fg = text_color(color)
+    fg = "#ffffff"
     return render.Box(
         width = WIDTH,
         height = HEADER_HEIGHT,
@@ -284,10 +289,6 @@ def pad2(n):
 def parse_hex(hex_color):
     h = hex_color.lstrip("#")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-
-def text_color(bg):
-    r, g, b = parse_hex(bg)
-    return "#000000" if 0.299 * r + 0.587 * g + 0.114 * b > 150 else "#ffffff"
 
 def dim(hex_color, factor):
     digits = "0123456789abcdef"
