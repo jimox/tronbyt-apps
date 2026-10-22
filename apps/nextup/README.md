@@ -26,7 +26,7 @@ calendar is read by Apps Script and pushed out, rather than pulled.
    - `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` = the Cloudflare
      Access service token, if the tunnel host is behind Access (needs an
      Access app for the `relay/push` path with a Service Auth policy)
-   - optional: `RSVP`, `RED_ONLY`, `MAX_EVENTS`, `LOOKAHEAD_HOURS`
+   - optional: `RSVP`, `COLORS`, `MAX_EVENTS`, `LOOKAHEAD_HOURS`
      (see the top of `Code.gs`)
 4. Run `pushNextUp` once from the editor and approve the calendar and
    external-request permissions. Check the execution log for errors.
