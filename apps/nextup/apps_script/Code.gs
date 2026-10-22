@@ -5,7 +5,7 @@
  *   PUSH_URL         https://<tunnel host>/relay/push/nextup        (required)
  *   PUSH_TOKEN       same value as NEXTUP_TOKEN on the Pi            (required)
  *   RSVP             comma list of YES, MAYBE, INVITED, OWNER        (default YES,OWNER)
- *   RED_ONLY         true / false                                    (default true)
+ *   COLORS           comma list of red, green; or "any"              (default red,green)
  *   MAX_EVENTS       how many meetings to send                       (default 5)
  *   LOOKAHEAD_HOURS  how far ahead to look                           (default 168)
  *
@@ -19,17 +19,22 @@
 
 const DEFAULTS = {
   RSVP: 'YES,OWNER',
-  RED_ONLY: 'true',
+  COLORS: 'red,green',
   MAX_EVENTS: '5',
   LOOKAHEAD_HOURS: '168',
 };
 
 const SKIP_EVENT_TYPES = ['OUT_OF_OFFICE', 'WORKING_LOCATION', 'BIRTHDAY'];
 
-// Hue window (degrees) that counts as "red". Tomato is 0, Flamingo ~5,
-// Tangerine ~14 (excluded).
-const RED_HUE_MAX = 10;
-const RED_HUE_MIN = 345;
+// Hue windows (degrees) for each color family. A window with min > max wraps
+// through 0.
+//   red:   Tomato 0, Flamingo ~5. Tangerine ~14 is excluded (orange).
+//   green: Pistachio ~89, Basil ~149, Sage ~152. Avocado ~64 (yellow-green)
+//          and Eucalyptus ~174 (teal) are excluded.
+const HUE_FAMILIES = {
+  red: { min: 345, max: 10 },
+  green: { min: 80, max: 165 },
+};
 
 // Google's event color palette, keyed by CalendarApp.EventColor id.
 const EVENT_COLORS = {
@@ -61,7 +66,10 @@ function pushNextUp() {
   const allowed = prop('RSVP').split(',').map(function (s) {
     return s.trim().toUpperCase();
   });
-  const redOnly = prop('RED_ONLY').toLowerCase() === 'true';
+  const colors = prop('COLORS').toLowerCase().split(',').map(function (s) {
+    return s.trim();
+  });
+  const anyColor = colors.indexOf('any') >= 0;
   const max = Number(prop('MAX_EVENTS'));
   const now = new Date();
   const end = new Date(now.getTime() + Number(prop('LOOKAHEAD_HOURS')) * 3600 * 1000);
@@ -83,7 +91,7 @@ function pushNextUp() {
       continue;
     }
     const color = EVENT_COLORS[ev.getColor()] || calColor;
-    if (redOnly && !isRed_(color)) {
+    if (!anyColor && colors.indexOf(hueFamily_(color)) < 0) {
       continue;
     }
     events.push({
@@ -129,10 +137,11 @@ function installTrigger() {
   ScriptApp.newTrigger('pushNextUp').timeBased().everyMinutes(5).create();
 }
 
-function isRed_(hex) {
+/** Returns the HUE_FAMILIES key a hex color falls in, or null. */
+function hueFamily_(hex) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
   if (!m) {
-    return false;
+    return null;
   }
   const r = parseInt(m[1], 16);
   const g = parseInt(m[2], 16);
@@ -140,15 +149,29 @@ function isRed_(hex) {
   const hi = Math.max(r, g, b);
   const lo = Math.min(r, g, b);
 
-  // Red must be the dominant channel and reasonably saturated.
-  if (hi !== r || hi - lo < 64) {
-    return false;
+  // Greys and washed-out colors have no meaningful hue.
+  if (hi - lo < 64) {
+    return null;
   }
-  let hue = (60 * (g - b)) / (hi - lo);
+  let hue;
+  if (hi === r) {
+    hue = (60 * (g - b)) / (hi - lo);
+  } else if (hi === g) {
+    hue = 120 + (60 * (b - r)) / (hi - lo);
+  } else {
+    hue = 240 + (60 * (r - g)) / (hi - lo);
+  }
   if (hue < 0) {
     hue += 360;
   }
-  return hue <= RED_HUE_MAX || hue >= RED_HUE_MIN;
+  for (const name in HUE_FAMILIES) {
+    const w = HUE_FAMILIES[name];
+    const inside = w.min <= w.max ? hue >= w.min && hue <= w.max : hue >= w.min || hue <= w.max;
+    if (inside) {
+      return name;
+    }
+  }
+  return null;
 }
 
 function eventType_(ev) {
