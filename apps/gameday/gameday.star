@@ -41,10 +41,12 @@ TAG_HEIGHT = 7
 # which is much crisper than letting pixlet shrink a larger image.
 LOGO_SIZE = 16
 
-# Finals and upcoming games use stacked team-color rows under a slimmer
-# header. Row logos are a little taller than the rows and overlap the edges.
-STACKED_HEADER_HEIGHT = 6
-STACKED_ROW_HEIGHT = 13
+# Finals and upcoming games use stacked team-color rows: header (7), top row
+# (12), a dark 1px gap, bottom row (12). Row logos are a little taller than
+# the rows and overlap the edges.
+STACKED_HEADER_HEIGHT = 7
+STACKED_ROW_HEIGHT = 12
+STACKED_GAP = 1
 ROW_LOGO_SIZE = 14
 
 FRAME_MS = 100
@@ -357,13 +359,15 @@ def render_game(g, now):
 def stacked(g, top):
     """Header, then a team-color row per team with logos overlaid so they can
     be taller than the rows."""
-    rows = render.Column(children = [top, team_row(g, "away"), team_row(g, "home")])
+    rows = render.Column(
+        children = [top, team_row(g, "away"), render.Box(width = WIDTH, height = STACKED_GAP), team_row(g, "home")],
+    )
     overlays = [rows]
     for i, side in enumerate(("away", "home")):
         logo = logo_image(g[side]["logo"], ROW_LOGO_SIZE)
         if not logo:
             continue
-        row_top = STACKED_HEADER_HEIGHT + i * STACKED_ROW_HEIGHT
+        row_top = STACKED_HEADER_HEIGHT + i * (STACKED_ROW_HEIGHT + STACKED_GAP)
 
         # ESPN's logo artwork sits about 1px low in its square, so lift it
         # to line up with the team name.
