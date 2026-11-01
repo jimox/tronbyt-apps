@@ -30,11 +30,22 @@ LOGO_CACHE_SECONDS = 86400
 
 WIDTH = 64
 HEADER_HEIGHT = 7
-ROW_HEIGHT = 12
+
+# Live games use a side-by-side layout: away logo | scores | home logo, with a
+# team-color name tag under each logo.
+SIDE_WIDTH = 17
+CENTER_WIDTH = 64 - 2 * SIDE_WIDTH
+TAG_HEIGHT = 7
 
 # Logos fill the team row. ESPN's resizer produces them at exactly this size,
 # which is much crisper than letting pixlet shrink a larger image.
-LOGO_SIZE = 12
+LOGO_SIZE = 16
+
+# Finals and upcoming games use stacked team-color rows under a slimmer
+# header. Row logos are a little taller than the rows and overlap the edges.
+STACKED_HEADER_HEIGHT = 6
+STACKED_ROW_HEIGHT = 13
+ROW_LOGO_SIZE = 14
 
 FRAME_MS = 100
 
@@ -269,7 +280,7 @@ def logo_url(team):
         href = logos[0].get("href", "") if logos else ""
     return href
 
-def logo_image(href):
+def logo_image(href, size = LOGO_SIZE):
     """Dark-background variant of a team logo at LOGO_SIZE, via ESPN's resizer."""
     if not href.startswith(ESPN_CDN):
         return None
@@ -278,7 +289,7 @@ def logo_image(href):
     for p in candidates:
         resp = http.get(
             ESPN_CDN + "/combiner/i",
-            params = {"img": p, "w": str(LOGO_SIZE), "h": str(LOGO_SIZE)},
+            params = {"img": p, "w": str(size), "h": str(size)},
             ttl_seconds = LOGO_CACHE_SECONDS,
         )
         if resp.status_code == 200:
@@ -317,34 +328,85 @@ def render_game(g, now):
         else:
             top = header(league, clock)
     elif g["state"] == "final":
-        top = header(league, render.Text(g["detail"].upper(), font = "tom-thumb", color = "#ffffff"))
+        top = header(league, render.Text(g["detail"].upper(), font = "tom-thumb", color = "#ffffff"), STACKED_HEADER_HEIGHT)
     else:
         start = render.Text(when(g, now, len(g["league"])), font = "tom-thumb", color = "#ffffff")
         if g["last"]:
             room = HEADER_CHARS - len(g["league"]) - 1
             last = "Last " + g["last"] if len("Last " + g["last"]) <= room else g["last"]
             top = render.Animation(
-                children = [header(league, start)] * HEADER_SWAP_FRAMES +
-                           [header(league, render.Text(last, font = "tom-thumb", color = LABEL_COLOR))] * HEADER_SWAP_FRAMES,
+                children = [header(league, start, STACKED_HEADER_HEIGHT)] * HEADER_SWAP_FRAMES +
+                           [header(league, render.Text(last, font = "tom-thumb", color = LABEL_COLOR), STACKED_HEADER_HEIGHT)] * HEADER_SWAP_FRAMES,
             )
         else:
-            top = header(league, start)
+            top = header(league, start, STACKED_HEADER_HEIGHT)
+
+    if g["state"] != "live":
+        return stacked(g, top)
 
     return render.Column(
         children = [
             top,
-            team_row(g, "away"),
             render.Box(width = WIDTH, height = 1),
-            team_row(g, "home"),
+            render.Row(
+                children = [team_side(g, "away"), center(g), team_side(g, "home")],
+            ),
         ],
     )
 
-def header(left, right):
+def stacked(g, top):
+    """Header, then a team-color row per team with logos overlaid so they can
+    be taller than the rows."""
+    rows = render.Column(children = [top, team_row(g, "away"), team_row(g, "home")])
+    overlays = [rows]
+    for i, side in enumerate(("away", "home")):
+        logo = logo_image(g[side]["logo"], ROW_LOGO_SIZE)
+        if not logo:
+            continue
+        row_top = STACKED_HEADER_HEIGHT + i * STACKED_ROW_HEIGHT
+
+        # ESPN's logo artwork sits about 1px low in its square, so lift it
+        # to line up with the team name.
+        y = row_top + (STACKED_ROW_HEIGHT - ROW_LOGO_SIZE) // 2 - 1
+        overlays.append(render.Padding(
+            pad = (1, max(0, y), 0, 0),
+            child = render.Image(src = logo, width = ROW_LOGO_SIZE, height = ROW_LOGO_SIZE),
+        ))
+    return render.Stack(children = overlays)
+
+def team_row(g, side):
+    t = g[side]
+    bg = dim(t["bg"], 0.5) if lost(g, side) else t["bg"]
+    text_color = "#bbbbbb" if lost(g, side) else "#ffffff"
+    if g["state"] == "next":
+        value, font, color = t["record"], "tom-thumb", "#dddddd"
+    else:
+        value, font = t["score"], "6x10"
+        color = DIM_COLOR if lost(g, side) else "#ffffff"
+    h = STACKED_ROW_HEIGHT
     return render.Box(
         width = WIDTH,
-        height = HEADER_HEIGHT,
+        height = h,
+        color = bg,
         child = render.Padding(
-            pad = (1, 1, 1, 0),
+            pad = (1 + ROW_LOGO_SIZE + 3, 0, 2, 0),
+            child = render.Row(
+                expanded = True,
+                main_align = "space_between",
+                children = [
+                    centered(t["abbr"], "tb-8", text_color, text_width(t["abbr"], "tb-8"), h),
+                    centered(value, font, color, text_width(value, font), h),
+                ],
+            ),
+        ),
+    )
+
+def header(left, right, height = HEADER_HEIGHT):
+    return render.Box(
+        width = WIDTH,
+        height = height,
+        child = render.Padding(
+            pad = (1, height - 6, 1, 0),
             child = render.Row(
                 expanded = True,
                 main_align = "space_between",
@@ -384,54 +446,85 @@ def outs(n):
         dots.append(render.Box(width = 1, height = 1, color = LIVE_COLOR if i < n else BASE_OFF))
     return render.Row(children = dots)
 
-def team_row(g, side):
-    t = g[side]
+# Where the letters/digits actually sit in each font's text box:
+# (first lit row, lit height). Every font also leaves 1 blank column after
+# the last character.
+FONT_METRICS = {
+    "tom-thumb": (0, 5),
+    "tb-8": (1, 6),
+    "6x10": (1, 7),
+}
+
+def centered(text, font, color, width, height):
+    """Text whose visible glyphs are centered in a width x height box (the
+    widgets' own centering is off by the fonts' blank rows and column)."""
+    t = render.Text(text, font = font, color = color)
+    tw, _ = t.size()
+    top, glyph_h = FONT_METRICS[font]
+    left = max(0, (width - (tw - 1)) // 2)
+    down = max(0, (height - glyph_h) // 2 - top)
+    return render.Stack(
+        children = [
+            render.Box(width = width, height = height),
+            render.Padding(pad = (left, down, 0, 0), child = t),
+        ],
+    )
+
+def text_width(text, font):
+    """Visible width of text (without the trailing blank column)."""
+    w, _ = render.Text(text, font = font).size()
+    return w - 1
+
+def lost(g, side):
     other = g["home" if side == "away" else "away"]
-    lost = g["state"] == "final" and other["winner"]
-    bg = dim(t["bg"], 0.5) if lost else t["bg"]
-    text_color = "#bbbbbb" if lost else "#ffffff"
+    return g["state"] == "final" and other["winner"]
 
-    if g["state"] == "next":
-        right = render.Text(t["record"], font = "tom-thumb", color = "#dddddd")
-    else:
-        right = render.Text(t["score"], font = "6x10", color = text_color)
-
-    has_ball = g["state"] == "live" and g["situation"].get("possession", "") == t["id"]
-    if has_ball:
-        right = render.Row(
-            cross_align = "center",
-            children = [render.Box(width = 2, height = 2, color = BASE_ON), render.Box(width = 2, height = 1), right],
-        )
+def team_side(g, side):
+    """Logo with a team-color name tag under it."""
+    t = g[side]
+    bg = dim(t["bg"], 0.5) if lost(g, side) else t["bg"]
+    text_color = "#bbbbbb" if lost(g, side) else "#ffffff"
 
     logo = logo_image(t["logo"])
     logo_box = render.Box(width = LOGO_SIZE, height = LOGO_SIZE)
     if logo:
         logo_box = render.Image(src = logo, width = LOGO_SIZE, height = LOGO_SIZE)
 
-    return render.Box(
-        width = WIDTH,
-        height = ROW_HEIGHT,
+    has_ball = g["state"] == "live" and g["situation"].get("possession", "") == t["id"]
+    tag = render.Box(
+        width = SIDE_WIDTH,
+        height = TAG_HEIGHT,
         color = bg,
-        child = render.Padding(
-            pad = (1, 0, 2, 0),
-            child = render.Row(
-                expanded = True,
-                main_align = "space_between",
-                cross_align = "center",
-                children = [
-                    render.Row(
-                        cross_align = "center",
-                        children = [
-                            logo_box,
-                            render.Box(width = 3, height = 1),
-                            render.Text(t["abbr"], font = "tb-8", color = text_color),
-                        ],
-                    ),
-                    right,
-                ],
-            ),
-        ),
+        child = centered(t["abbr"], "tom-thumb", text_color, SIDE_WIDTH, TAG_HEIGHT),
     )
+    if has_ball:
+        # Possession: yellow dot in the tag's top corner nearest the scores.
+        corner = SIDE_WIDTH - 2 if side == "away" else 0
+        tag = render.Stack(
+            children = [
+                tag,
+                render.Padding(pad = (corner, 0, 0, 0), child = render.Box(width = 2, height = 2, color = BASE_ON)),
+            ],
+        )
+
+    return render.Column(
+        cross_align = "center",
+        children = [
+            render.Box(width = SIDE_WIDTH, height = LOGO_SIZE, child = logo_box),
+            render.Box(width = SIDE_WIDTH, height = 1),
+            tag,
+        ],
+    )
+
+def center(g):
+    """Live scores, each centered in its half of the middle column and level
+    with the logos."""
+    half = CENTER_WIDTH // 2
+    scores = []
+    for side in ("away", "home"):
+        color = DIM_COLOR if lost(g, side) else "#ffffff"
+        scores.append(centered(g[side]["score"], "6x10", color, half, LOGO_SIZE))
+    return render.Row(children = scores)
 
 def dim(hex_color, factor):
     h = hex_color.lstrip("#")
