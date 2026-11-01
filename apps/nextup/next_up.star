@@ -207,14 +207,15 @@ def render_event(ev, now, tz, stale):
     return render.Root(delay = FRAME_MS, child = screen)
 
 def header(left, right, color):
-    """right is a list of (text, font) runs, bottom-aligned."""
+    """right is a list of (text, font) runs, bottom-aligned. The top pixel
+    row stays dark; the colored bar is the HEADER_HEIGHT - 1 rows below it."""
     fg = "#ffffff"
-    return render.Box(
+    bar = render.Box(
         width = WIDTH,
-        height = HEADER_HEIGHT,
+        height = HEADER_HEIGHT - 1,
         color = color,
         child = render.Padding(
-            pad = (1, 1, 1, 0),
+            pad = (1, 0, 1, 0),
             child = render.Row(
                 expanded = True,
                 main_align = "space_between",
@@ -229,6 +230,7 @@ def header(left, right, color):
             ),
         ),
     )
+    return render.Column(children = [render.Box(width = WIDTH, height = 1), bar])
 
 def run(text, font, color):
     if font == GAP:
