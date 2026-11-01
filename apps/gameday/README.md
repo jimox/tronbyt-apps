@@ -12,19 +12,28 @@ It hides itself if none of your teams has anything scheduled.
 
 ## Display
 
+Live games use a side-by-side layout with 16px logos:
+
 ```
-NFL      4:12 - 3rd      league · status (live in red, FINAL, or start time)
-[logo] KC          17    away team, row in the team's color
-[logo] DEN       • 21    home team; • = possession
+NFL       4:12 - 3rd     league · clock (red); alternates with down & distance
+[LOGO]   17   21  [LOGO]
+ [KC]           •[DEN]   team-color name tags; • = possession
 ```
 
-- Each team row is filled with the team's color (brightness-normalized so
-  white text stays readable); the losing team in a final is dimmed.
-- Live football alternates the clock with down and distance
-  ("2nd & 7 DEN 35"). Live baseball shows the inning, a bases diamond and
-  outs.
-- Upcoming games alternate the start time with the team's last result
-  ("W 27-24").
+Finals and upcoming games use stacked team-color rows with 14px logos:
+
+```
+NFL            FINAL     league · FINAL, or start time / last result
+[logo] KC          20    loser dimmed
+[logo] DEN         24    (upcoming games show records instead of scores)
+```
+
+- Team colors are the primary color (alternate if the primary is black or
+  grey), normalized in brightness so white text reads on every team.
+- Live baseball shows the inning, a bases diamond and outs in the header.
+- Text is positioned from each font's glyph metrics (`FONT_METRICS`) so it
+  is centered in its tag or row; stacked logos are lifted 1px because ESPN's
+  logo artwork sits slightly low in its square.
 
 ## Data
 
