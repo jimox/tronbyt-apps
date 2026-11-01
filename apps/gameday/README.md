@@ -14,9 +14,17 @@ It hides itself if none of your teams has anything scheduled.
 
 ```
 NFL      4:12 - 3rd      league · status (live in red, FINAL, or start time)
-[logo] KC          17    away team
-[logo] DEN         21    home team
+[logo] KC          17    away team, row in the team's color
+[logo] DEN       • 21    home team; • = possession
 ```
+
+- Each team row is filled with the team's color (brightness-normalized so
+  white text stays readable); the losing team in a final is dimmed.
+- Live football alternates the clock with down and distance
+  ("2nd & 7 DEN 35"). Live baseball shows the inning, a bases diamond and
+  outs.
+- Upcoming games alternate the start time with the team's last result
+  ("W 27-24").
 
 ## Data
 
@@ -24,7 +32,8 @@ Uses ESPN's public site API (no key). It's unofficial and could change
 without notice.
 
 - League scoreboard for today: live scores and today's finals, cached 60s.
-- Team page: next game and records, cached 30 min.
+- Team page: next game, records and colors, cached 30 min.
+- Team schedule: last result for upcoming games, cached 30 min.
 - Logos: ESPN's dark-background variants where available, cached a day.
 
 Set the app's render interval in Tronbyt to 1 minute so live scores stay

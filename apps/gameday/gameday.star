@@ -44,6 +44,15 @@ FRAMES_PER_GAME = 50
 LIVE_COLOR = "#ff3b30"
 DIM_COLOR = "#777777"
 LABEL_COLOR = "#999999"
+BASE_ON = "#ffd60a"
+BASE_OFF = "#3a3a3a"
+
+# Team rows are filled with the team color, scaled so its brightest channel
+# is ROW_BRIGHTNESS (keeps white text readable on any team color).
+ROW_BRIGHTNESS = 110
+
+# Live football and upcoming games alternate two header texts this often.
+HEADER_SWAP_FRAMES = 25
 
 def main(config):
     tz = config.get("$tz", DEFAULT_TZ)
@@ -128,8 +137,58 @@ def team_game(label, path, params, team_id, now, tz):
                         TEAM_CACHE_SECONDS,
                     )
                     g[side]["record"] = team_record(info)
+                if g[side]["bg"] == "#2a2a2a":
+                    info = team if g[side]["id"] == team_id else fetch(
+                        "%s/%s/teams/%s" % (ESPN, path, g[side]["id"]),
+                        {},
+                        TEAM_CACHE_SECONDS,
+                    )
+                    t = info.get("team", {}) if info else {}
+                    g[side]["bg"] = row_color(t.get("color", ""), t.get("alternateColor", ""))
+            g["last"] = last_result(path, team_id)
             return g
     return None
+
+def last_result(path, team_id):
+    """'W 24-17' for the team's most recent completed game, from its side."""
+    sched = fetch("%s/%s/teams/%s/schedule" % (ESPN, path, team_id), {}, TEAM_CACHE_SECONDS)
+    if not sched:
+        return ""
+    result = ""
+    for ev in sched.get("events", []):
+        comp = ev.get("competitions", [{}])[0]
+        if comp.get("status", {}).get("type", {}).get("state") != "post":
+            continue
+        mine, theirs = None, None
+        for c in comp.get("competitors", []):
+            if c.get("team", {}).get("id") == team_id:
+                mine = c
+            else:
+                theirs = c
+        if not mine or not theirs:
+            continue
+        a, b = score_text(mine.get("score")), score_text(theirs.get("score"))
+        outcome = "W" if mine.get("winner") else ("L" if theirs.get("winner") else "T")
+        result = "%s %s-%s" % (outcome, a, b)
+    return result
+
+def row_color(primary, alternate):
+    """The team's primary color (or its alternate if the primary is black or
+    grey), normalized in brightness."""
+    for c in (primary, alternate):
+        if len(c) != 6:
+            continue
+        rgb = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+        if max(rgb) - min(rgb) < 40:
+            continue
+        scale = ROW_BRIGHTNESS / max(rgb)
+        digits = "0123456789abcdef"
+        out = "#"
+        for v in rgb:
+            v = min(255, int(v * scale))
+            out += digits[v // 16] + digits[v % 16]
+        return out
+    return "#2a2a2a"
 
 def team_record(info):
     if not info:
@@ -159,6 +218,7 @@ def parse_event(label, ev, tz):
             "score": score_text(c.get("score")),
             "record": record_text(c),
             "winner": c.get("winner", False),
+            "bg": row_color(t.get("color", ""), t.get("alternateColor", "")),
         }
     if "home" not in teams or "away" not in teams:
         return None
@@ -172,6 +232,8 @@ def parse_event(label, ev, tz):
         "away": teams["away"],
         "home": teams["home"],
         "team_ids": [teams["away"]["id"], teams["home"]["id"]],
+        "situation": comp.get("situation", {}),
+        "last": "",
     }
 
 def parse_espn_time(s):
@@ -187,10 +249,17 @@ def score_text(score):
     return str(score) if score != None else ""
 
 def record_text(c):
-    for r in c.get("records", []) + c.get("record", []):
-        text = r.get("summary") or r.get("displayValue")
-        if text:
-            return text
+    # "records" is a list of {summary}; "record" is a list of {displayValue}
+    # in some feeds and a plain string (e.g. MLB scoreboards) in others.
+    for key in ("records", "record"):
+        value = c.get(key)
+        if type(value) == "string" and value:
+            return value
+        if type(value) == "list":
+            for r in value:
+                text = r.get("summary") or r.get("displayValue")
+                if text:
+                    return text
     return ""
 
 def logo_url(team):
@@ -219,21 +288,59 @@ def logo_image(href):
 # Rendering
 
 def render_game(g, now):
-    if g["state"] == "live":
+    league = render.Text(g["league"], font = "tom-thumb", color = LABEL_COLOR)
+    sit = g["situation"]
+
+    if g["state"] == "live" and "outs" in sit:
+        # Baseball: inning, bases diamond, outs.
         status = render.Row(
             cross_align = "center",
             children = [
-                render.Box(width = 2, height = 2, color = LIVE_COLOR),
-                render.Box(width = 1, height = 1),
                 render.Text(g["detail"], font = "tom-thumb", color = LIVE_COLOR),
+                render.Box(width = 2, height = 1),
+                bases(sit),
+                render.Box(width = 2, height = 1),
+                outs(sit.get("outs", 0)),
             ],
         )
+        top = header(league, status)
+    elif g["state"] == "live":
+        clock = live_text(g["detail"])
+        down = sit.get("shortDownDistanceText", "")
+        if down:
+            spot = sit.get("possessionText", "")
+            down_text = live_text(down + (" " + spot if spot else ""), dot = False)
+            top = render.Animation(
+                children = [header(league, clock)] * HEADER_SWAP_FRAMES +
+                           [header(render.Box(width = 1, height = 1), down_text)] * HEADER_SWAP_FRAMES,
+            )
+        else:
+            top = header(league, clock)
     elif g["state"] == "final":
-        status = render.Text(g["detail"].upper(), font = "tom-thumb", color = "#ffffff")
+        top = header(league, render.Text(g["detail"].upper(), font = "tom-thumb", color = "#ffffff"))
     else:
-        status = render.Text(when(g, now, len(g["league"])), font = "tom-thumb", color = "#ffffff")
+        start = render.Text(when(g, now, len(g["league"])), font = "tom-thumb", color = "#ffffff")
+        if g["last"]:
+            room = HEADER_CHARS - len(g["league"]) - 1
+            last = "Last " + g["last"] if len("Last " + g["last"]) <= room else g["last"]
+            top = render.Animation(
+                children = [header(league, start)] * HEADER_SWAP_FRAMES +
+                           [header(league, render.Text(last, font = "tom-thumb", color = LABEL_COLOR))] * HEADER_SWAP_FRAMES,
+            )
+        else:
+            top = header(league, start)
 
-    header = render.Box(
+    return render.Column(
+        children = [
+            top,
+            team_row(g, "away"),
+            render.Box(width = WIDTH, height = 1),
+            team_row(g, "home"),
+        ],
+    )
+
+def header(left, right):
+    return render.Box(
         width = WIDTH,
         height = HEADER_HEIGHT,
         child = render.Padding(
@@ -241,32 +348,60 @@ def render_game(g, now):
             child = render.Row(
                 expanded = True,
                 main_align = "space_between",
-                children = [render.Text(g["league"], font = "tom-thumb", color = LABEL_COLOR), status],
+                cross_align = "center",
+                children = [left, right],
             ),
         ),
     )
 
-    return render.Column(
+def live_text(text, dot = True):
+    children = []
+    if dot:
+        children += [render.Box(width = 2, height = 2, color = LIVE_COLOR), render.Box(width = 1, height = 1)]
+    children.append(render.Text(text, font = "tom-thumb", color = LIVE_COLOR))
+    return render.Row(cross_align = "center", children = children)
+
+def bases(sit):
+    """2nd on top, 3rd left, 1st right; lit when occupied."""
+
+    def base(on):
+        return render.Box(width = 2, height = 2, color = BASE_ON if on else BASE_OFF)
+
+    return render.Stack(
         children = [
-            header,
-            render.Box(width = WIDTH, height = 1),
-            team_row(g, "away"),
-            team_row(g, "home"),
+            render.Box(width = 6, height = 5),
+            render.Padding(pad = (2, 0, 0, 0), child = base(sit.get("onSecond"))),
+            render.Padding(pad = (0, 2, 0, 0), child = base(sit.get("onThird"))),
+            render.Padding(pad = (4, 2, 0, 0), child = base(sit.get("onFirst"))),
         ],
     )
+
+def outs(n):
+    dots = []
+    for i in range(3):
+        if i:
+            dots.append(render.Box(width = 1, height = 1))
+        dots.append(render.Box(width = 1, height = 1, color = LIVE_COLOR if i < n else BASE_OFF))
+    return render.Row(children = dots)
 
 def team_row(g, side):
     t = g[side]
     other = g["home" if side == "away" else "away"]
+    lost = g["state"] == "final" and other["winner"]
+    bg = dim(t["bg"], 0.5) if lost else t["bg"]
+    text_color = "#bbbbbb" if lost else "#ffffff"
 
     if g["state"] == "next":
-        right = render.Text(t["record"], font = "tom-thumb", color = DIM_COLOR)
-        abbr_color = "#ffffff"
+        right = render.Text(t["record"], font = "tom-thumb", color = "#dddddd")
     else:
-        lost = g["state"] == "final" and other["winner"]
-        color = DIM_COLOR if lost else "#ffffff"
-        right = render.Text(t["score"], font = "tb-8", color = color)
-        abbr_color = color
+        right = render.Text(t["score"], font = "6x10", color = text_color)
+
+    has_ball = g["state"] == "live" and g["situation"].get("possession", "") == t["id"]
+    if has_ball:
+        right = render.Row(
+            cross_align = "center",
+            children = [render.Box(width = 2, height = 2, color = BASE_ON), render.Box(width = 2, height = 1), right],
+        )
 
     logo = logo_image(t["logo"])
     logo_box = render.Box(width = LOGO_SIZE, height = LOGO_SIZE)
@@ -276,6 +411,7 @@ def team_row(g, side):
     return render.Box(
         width = WIDTH,
         height = ROW_HEIGHT,
+        color = bg,
         child = render.Padding(
             pad = (1, 0, 2, 0),
             child = render.Row(
@@ -288,7 +424,7 @@ def team_row(g, side):
                         children = [
                             logo_box,
                             render.Box(width = 3, height = 1),
-                            render.Text(t["abbr"], font = "tb-8", color = abbr_color),
+                            render.Text(t["abbr"], font = "tb-8", color = text_color),
                         ],
                     ),
                     right,
@@ -296,6 +432,15 @@ def team_row(g, side):
             ),
         ),
     )
+
+def dim(hex_color, factor):
+    h = hex_color.lstrip("#")
+    digits = "0123456789abcdef"
+    out = "#"
+    for k in (0, 2, 4):
+        v = int(int(h[k:k + 2], 16) * factor)
+        out += digits[v // 16] + digits[v % 16]
+    return out
 
 # tom-thumb is 4px per character; the header has 62px for the league label,
 # a 1-character gap and the status.
