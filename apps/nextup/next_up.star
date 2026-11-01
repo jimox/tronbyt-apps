@@ -27,6 +27,10 @@ HEADER_HEIGHT = 9
 BODY_HEIGHT = 16
 BAR_HEIGHT = 2
 
+# Rows between the header and the progress bar (which sits on the bottom two
+# rows). The flag and title are each centered in this area.
+CONTENT_HEIGHT = 32 - HEADER_HEIGHT - BAR_HEIGHT
+
 # Fanatics flag, sampled from the logo at 13x11 and shown left of the title.
 # X = full brightness, o = dim (smooths the curves), . = off.
 FLAG = [
@@ -180,15 +184,14 @@ def render_event(ev, now, tz, stale):
     screen = render.Column(
         children = [
             top,
-            render.Padding(pad = (2, 1, 0, 0), child = render.Row(
-                cross_align = "center",
+            render.Padding(pad = (2, 0, 0, 0), child = render.Row(
                 children = [
-                    render.Box(width = len(FLAG[0]), height = BODY_HEIGHT, child = flag()),
+                    render.Box(width = len(FLAG[0]), height = CONTENT_HEIGHT, child = flag()),
                     render.Box(width = FLAG_GAP, height = 1),
-                    title(ev["title"]),
+                    render.Box(width = TITLE_WIDTH, height = CONTENT_HEIGHT, child = title(ev["title"])),
                 ],
             )),
-            render.Padding(pad = (2, 3, 0, 0), child = bar(progress, bar_color)),
+            render.Padding(pad = (2, 0, 0, 0), child = bar(progress, bar_color)),
         ],
     )
 
@@ -198,7 +201,7 @@ def render_event(ev, now, tz, stale):
             children = [
                 screen,
                 render.Padding(
-                    pad = (WIDTH - 3, 29, 0, 0),
+                    pad = (WIDTH - 3, 32 - 3, 0, 0),
                     child = render.Box(width = 3, height = 3, color = STALE_COLOR),
                 ),
             ],
