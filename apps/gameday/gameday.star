@@ -134,33 +134,52 @@ def team_game(label, path, params, team_id, now, tz):
             if g["state"] == "final" and g["start"].format("2006-01-02") == today:
                 return g
 
-    # Otherwise the team's next game.
+    # Otherwise the team's next game. ESPN's nextEvent can lag (it keeps
+    # pointing at a finished game for a while), so fall back to the first
+    # upcoming game on the team's schedule.
     team = fetch("%s/%s/teams/%s" % (ESPN, path, team_id), {}, TEAM_CACHE_SECONDS)
     if not team:
         return None
+    g = None
     for ev in team.get("team", {}).get("nextEvent", []):
+        candidate = parse_event(label, ev, tz)
+        if candidate and candidate["state"] in ("live", "next"):
+            g = candidate
+            break
+    if not g:
+        g = next_scheduled(label, path, team_id, now, tz)
+    if not g:
+        return None
+
+    # nextEvent and schedule entries lack records and team colors; take them
+    # from each team's page.
+    for side in ("away", "home"):
+        if g[side]["record"] and g[side]["bg"] != "#2a2a2a":
+            continue
+        info = team if g[side]["id"] == team_id else fetch(
+            "%s/%s/teams/%s" % (ESPN, path, g[side]["id"]),
+            {},
+            TEAM_CACHE_SECONDS,
+        )
+        if not g[side]["record"]:
+            g[side]["record"] = team_record(info)
+        if g[side]["bg"] == "#2a2a2a":
+            t = info.get("team", {}) if info else {}
+            g[side]["bg"] = row_color(t.get("color", ""), t.get("alternateColor", ""))
+    g["last"] = last_result(path, team_id)
+    return g
+
+def next_scheduled(label, path, team_id, now, tz):
+    """Soonest upcoming game on the team's schedule."""
+    sched = fetch("%s/%s/teams/%s/schedule" % (ESPN, path, team_id), {}, TEAM_CACHE_SECONDS)
+    if not sched:
+        return None
+    best = None
+    for ev in sched.get("events", []):
         g = parse_event(label, ev, tz)
-        if g and g["state"] in ("live", "next"):
-            # nextEvent has no records; take them from each team's page.
-            for side in ("away", "home"):
-                if not g[side]["record"]:
-                    info = team if g[side]["id"] == team_id else fetch(
-                        "%s/%s/teams/%s" % (ESPN, path, g[side]["id"]),
-                        {},
-                        TEAM_CACHE_SECONDS,
-                    )
-                    g[side]["record"] = team_record(info)
-                if g[side]["bg"] == "#2a2a2a":
-                    info = team if g[side]["id"] == team_id else fetch(
-                        "%s/%s/teams/%s" % (ESPN, path, g[side]["id"]),
-                        {},
-                        TEAM_CACHE_SECONDS,
-                    )
-                    t = info.get("team", {}) if info else {}
-                    g[side]["bg"] = row_color(t.get("color", ""), t.get("alternateColor", ""))
-            g["last"] = last_result(path, team_id)
-            return g
-    return None
+        if g and g["state"] == "next" and g["start"] > now and (not best or g["start"] < best["start"]):
+            best = g
+    return best
 
 def last_result(path, team_id):
     """'W 24-17' for the team's most recent completed game, from its side."""
@@ -357,8 +376,8 @@ def render_game(g, now):
     )
 
 def stacked(g, top):
-    """Header, then a team-color row per team with logos overlaid so they can
-    be taller than the rows."""
+    """Header, then a team-color row per team with logos overlaid (clipped to
+    their rows)."""
     rows = render.Column(
         children = [top, team_row(g, "away"), render.Box(width = WIDTH, height = STACKED_GAP), team_row(g, "home")],
     )
@@ -369,12 +388,16 @@ def stacked(g, top):
             continue
         row_top = STACKED_HEADER_HEIGHT + i * (STACKED_ROW_HEIGHT + STACKED_GAP)
 
-        # ESPN's logo artwork sits about 1px low in its square, so lift it
-        # to line up with the team name.
-        y = row_top + (STACKED_ROW_HEIGHT - ROW_LOGO_SIZE) // 2 - 1
+        # The logo is drawn inside a box exactly as tall as its row, which
+        # clips the overhang so nothing bleeds into the gap or the header.
+        # ESPN's artwork sits about 1px low in its square, so the logo is
+        # lifted (via bottom padding, since the box centers its child) to
+        # line up with the team name.
+        image = render.Image(src = logo, width = ROW_LOGO_SIZE, height = ROW_LOGO_SIZE)
+        lifted = render.Padding(pad = (0, 0, 0, 2), child = image)
         overlays.append(render.Padding(
-            pad = (1, max(0, y), 0, 0),
-            child = render.Image(src = logo, width = ROW_LOGO_SIZE, height = ROW_LOGO_SIZE),
+            pad = (1, row_top, 0, 0),
+            child = render.Box(width = ROW_LOGO_SIZE, height = STACKED_ROW_HEIGHT, child = lifted),
         ))
     return render.Stack(children = overlays)
 
