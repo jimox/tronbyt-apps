@@ -14,8 +14,9 @@ artwork fills its square very differently from team to team (a full-height
 shield vs. a short wide arrowhead), so one fixed size and offset can't work.
 For each logo cell the app uses, this picks the largest size whose artwork
 fits inside the cell with a 1px margin above and below, and the offset that centers the
-artwork (not the image) in the cell. Sizes and artwork bounds are measured on
-the exact images ESPN's resizer returns, which the app also requests.
+artwork (not the image) in the cell. The app fetches each original logo and
+lets pixlet scale it; artwork bounds are measured on the original scaled the
+same way.
 """
 
 import io
@@ -23,7 +24,6 @@ import json
 import pathlib
 import re
 import urllib.error
-import urllib.parse
 import urllib.request
 
 from PIL import Image
@@ -92,19 +92,22 @@ def logo_path(team):
     return href[len(CDN):] if href.startswith(CDN) else ""
 
 
-_cache = {}
+_originals = {}
 
 
 def artwork(path, size):
-    """Bounding box (x0, y0, x1, y1 inclusive) of visible artwork at size."""
-    key = (path, size)
-    if key not in _cache:
-        q = urllib.parse.urlencode({"img": path, "w": size, "h": size})
-        with urllib.request.urlopen(f"{CDN}/combiner/i?{q}", timeout=30) as resp:
-            im = Image.open(io.BytesIO(resp.read())).convert("RGBA")
-        box = im.split()[3].point(lambda v: 255 if v >= ALPHA_VISIBLE else 0).getbbox()
-        _cache[key] = (box[0], box[1], box[2] - 1, box[3] - 1) if box else None
-    return _cache[key]
+    """Bounding box (x0, y0, x1, y1 inclusive) of visible artwork at size.
+
+    The app fetches the original logo and lets pixlet scale it, so measure
+    the original scaled the same way (Lanczos is a close match). ESPN's
+    resizer is not used: it crops/shifts small logos by a pixel or so.
+    """
+    if path not in _originals:
+        with urllib.request.urlopen(CDN + path, timeout=30) as resp:
+            _originals[path] = Image.open(io.BytesIO(resp.read())).convert("RGBA")
+    im = _originals[path].resize((size, size), Image.LANCZOS)
+    box = im.split()[3].point(lambda v: 255 if v >= ALPHA_VISIBLE else 0).getbbox()
+    return (box[0], box[1], box[2] - 1, box[3] - 1) if box else None
 
 
 def round_half_up(x):
