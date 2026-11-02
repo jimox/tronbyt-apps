@@ -32,8 +32,8 @@ NFL            FINAL     league · FINAL, or start time / last result
   grey), normalized in brightness so white text reads on every team.
 - Live baseball shows the inning, a bases diamond and outs in the header.
 - Text is positioned from each font's glyph metrics (`FONT_METRICS`) so it
-  is centered in its tag or row; stacked logos are lifted 1px because ESPN's
-  logo artwork sits slightly low in its square.
+  is centered in its tag or row. Logos are sized and centered by their
+  artwork using `LOGO_FIT`, and clipped to their cells.
 
 ## Data
 
@@ -48,14 +48,22 @@ without notice.
 Set the app's render interval in Tronbyt to 1 minute so live scores stay
 current.
 
-## Team lists
+## Team lists and logo fit
 
-The settings dropdowns come from a generated `TEAMS` table in `gameday.star`.
-To refresh it (e.g. for expansion teams):
+The settings dropdowns (`TEAMS`) and per-team logo placement (`LOGO_FIT`)
+are generated tables in `gameday.star`. To refresh them (e.g. for expansion
+teams or new logos):
 
 ```
+pip install pillow
 python3 tools/gen_teams.py
 ```
+
+Logo artwork fills its square very differently from team to team, so the
+generator measures each logo at the sizes the app uses and records the
+largest size whose artwork fits the cell with 1px clear above and below, plus
+the offset that centers the artwork. Teams without an entry (e.g. FCS
+opponents) fall back to a default size and position.
 
 ## Local render
 

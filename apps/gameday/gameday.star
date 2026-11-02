@@ -247,6 +247,7 @@ def parse_event(label, ev, tz):
             "id": t.get("id", ""),
             "abbr": t.get("abbreviation", "?"),
             "logo": logo_url(t),
+            "fit": LOGO_FIT.get(label, {}).get(t.get("id", "")),
             "score": score_text(c.get("score")),
             "record": record_text(c),
             "winner": c.get("winner", False),
@@ -301,21 +302,54 @@ def logo_url(team):
         href = logos[0].get("href", "") if logos else ""
     return href
 
+def fetch_logo(path, size):
+    """A logo from ESPN's resizer at exactly size x size."""
+    resp = http.get(
+        ESPN_CDN + "/combiner/i",
+        params = {"img": path, "w": str(size), "h": str(size)},
+        ttl_seconds = LOGO_CACHE_SECONDS,
+    )
+    return resp.body() if resp.status_code == 200 else None
+
 def logo_image(href, size = LOGO_SIZE):
-    """Dark-background variant of a team logo at LOGO_SIZE, via ESPN's resizer."""
+    """Dark-background variant of a team logo, for teams without a LOGO_FIT."""
     if not href.startswith(ESPN_CDN):
         return None
     path = href[len(ESPN_CDN):]
     candidates = [path.replace("/500/", "/500-dark/"), path] if "/500/" in path else [path]
     for p in candidates:
-        resp = http.get(
-            ESPN_CDN + "/combiner/i",
-            params = {"img": p, "w": str(size), "h": str(size)},
-            ttl_seconds = LOGO_CACHE_SECONDS,
-        )
-        if resp.status_code == 200:
-            return resp.body()
+        src = fetch_logo(p, size)
+        if src:
+            return src
     return None
+
+def fitted_logo(t, mode, cell_w, cell_h, default_size, default_lift):
+    """A team logo placed in a cell_w x cell_h cell (clipped to it).
+
+    With a LOGO_FIT entry, the logo is sized so its artwork fits the cell
+    with a margin and positioned so the artwork (not the image square) is
+    centered. Otherwise it's default_size, centered and lifted default_lift.
+    """
+    fit = t["fit"]
+    if fit:
+        size, x, y = (fit[1], fit[2], fit[3]) if mode == "stacked" else (fit[4], fit[5], fit[6])
+        src = fetch_logo(fit[0], size)
+    else:
+        size = default_size
+        x, y = (cell_w - size) // 2, (cell_h - size) // 2 - default_lift
+        src = logo_image(t["logo"], size)
+    if not src:
+        return render.Box(width = cell_w, height = cell_h)
+    return place(render.Image(src = src, width = size, height = size), size, cell_w, cell_h, x, y)
+
+def place(child, size, w, h, x, y):
+    """child (size x size) with its top-left at (x, y) in a w x h box, which
+    clips it. Box centers its child, so padding steers the position; the
+    padding keeps the leftover space even so centering is exact."""
+    dx = 2 * x - (w - size)
+    dy = 2 * y - (h - size)
+    pad = (max(0, dx), max(0, dy), max(0, -dx), max(0, -dy))
+    return render.Box(width = w, height = h, child = render.Padding(pad = pad, child = child))
 
 # Rendering
 
@@ -383,21 +417,14 @@ def stacked(g, top):
     )
     overlays = [rows]
     for i, side in enumerate(("away", "home")):
-        logo = logo_image(g[side]["logo"], ROW_LOGO_SIZE)
-        if not logo:
-            continue
         row_top = STACKED_HEADER_HEIGHT + i * (STACKED_ROW_HEIGHT + STACKED_GAP)
 
-        # The logo is drawn inside a box exactly as tall as its row, which
-        # clips the overhang so nothing bleeds into the gap or the header.
-        # ESPN's artwork sits about 1px low in its square, so the logo is
-        # lifted (via bottom padding, since the box centers its child) to
-        # line up with the team name.
-        image = render.Image(src = logo, width = ROW_LOGO_SIZE, height = ROW_LOGO_SIZE)
-        lifted = render.Padding(pad = (0, 0, 0, 2), child = image)
+        # The cell is exactly as tall as the row, so nothing bleeds into the
+        # gap or the header. Without a fit, ESPN artwork sits about 1px low
+        # in its square, so the default lifts it 1px.
         overlays.append(render.Padding(
             pad = (1, row_top, 0, 0),
-            child = render.Box(width = ROW_LOGO_SIZE, height = STACKED_ROW_HEIGHT, child = lifted),
+            child = fitted_logo(g[side], "stacked", ROW_LOGO_SIZE, STACKED_ROW_HEIGHT, ROW_LOGO_SIZE, 1),
         ))
     return render.Stack(children = overlays)
 
@@ -512,11 +539,6 @@ def team_side(g, side):
     bg = dim(t["bg"], 0.5) if lost(g, side) else t["bg"]
     text_color = "#bbbbbb" if lost(g, side) else "#ffffff"
 
-    logo = logo_image(t["logo"])
-    logo_box = render.Box(width = LOGO_SIZE, height = LOGO_SIZE)
-    if logo:
-        logo_box = render.Image(src = logo, width = LOGO_SIZE, height = LOGO_SIZE)
-
     has_ball = g["state"] == "live" and g["situation"].get("possession", "") == t["id"]
     tag = render.Box(
         width = SIDE_WIDTH,
@@ -537,7 +559,7 @@ def team_side(g, side):
     return render.Column(
         cross_align = "center",
         children = [
-            render.Box(width = SIDE_WIDTH, height = LOGO_SIZE, child = logo_box),
+            fitted_logo(t, "live", SIDE_WIDTH, LOGO_SIZE, LOGO_SIZE, 0),
             render.Box(width = SIDE_WIDTH, height = 1),
             tag,
         ],
@@ -854,6 +876,269 @@ TEAMS = {
         ("19141", "Utah Royals"),
         ("15365", "Washington Spirit"),
     ],
+}
+
+# Per-team logo fit, keyed by league label and team id:
+# (path, stacked size, x, y, live size, x, y).
+LOGO_FIT = {
+    "NFL": {
+        "1": ("/i/teamlogos/nfl/500-dark/atl.png", 12, 0, -1, 16, -1, -1),
+        "2": ("/i/teamlogos/nfl/500-dark/buf.png", 14, -1, -2, 16, -1, -1),
+        "3": ("/i/teamlogos/nfl/500-dark/chi.png", 10, 2, 1, 16, 1, -1),
+        "4": ("/i/teamlogos/nfl/500-dark/cin.png", 14, -1, -2, 16, -1, -1),
+        "5": ("/i/teamlogos/nfl/500-dark/cle.png", 14, 0, -2, 16, 1, -1),
+        "6": ("/i/teamlogos/nfl/500-dark/dal.png", 12, 0, -2, 16, -1, -2),
+        "7": ("/i/teamlogos/nfl/500-dark/den.png", 14, -1, -2, 16, -1, -1),
+        "8": ("/i/teamlogos/nfl/500-dark/det.png", 14, -1, -2, 16, -1, -1),
+        "9": ("/i/teamlogos/nfl/500-dark/gb.png", 14, 0, -2, 16, 1, -1),
+        "10": ("/i/teamlogos/nfl/500-dark/ten.png", 10, 2, 1, 14, 2, 1),
+        "11": ("/i/teamlogos/nfl/500-dark/ind.png", 10, 2, 1, 14, 1, 1),
+        "12": ("/i/teamlogos/nfl/500-dark/kc.png", 14, 0, -2, 16, 1, -1),
+        "13": ("/i/teamlogos/nfl/500-dark/lv.png", 12, 0, -1, 16, -1, -1),
+        "14": ("/i/teamlogos/nfl/500-dark/lar.png", 14, -1, -2, 16, -1, -1),
+        "15": ("/i/teamlogos/nfl/500-dark/mia.png", 14, -1, -2, 16, -1, -1),
+        "16": ("/i/teamlogos/nfl/500-dark/min.png", 12, -1, -1, 16, -1, -1),
+        "17": ("/i/teamlogos/nfl/500-dark/ne.png", 14, -1, -2, 16, -1, -1),
+        "18": ("/i/teamlogos/nfl/500-dark/no.png", 12, 0, -1, 16, -1, -1),
+        "19": ("/i/teamlogos/nfl/500-dark/nyg.png", 14, 0, -2, 16, 1, -1),
+        "20": ("/i/teamlogos/nfl/500-dark/nyj.png", 14, -1, -2, 16, -1, -2),
+        "21": ("/i/teamlogos/nfl/500-dark/phi.png", 14, 0, -2, 16, 1, -1),
+        "22": ("/i/teamlogos/nfl/500-dark/ari.png", 12, 1, -1, 16, -1, -1),
+        "23": ("/i/teamlogos/nfl/500-dark/pit.png", 10, 2, 1, 14, 2, 1),
+        "24": ("/i/teamlogos/nfl/500-dark/lac.png", 14, -1, -2, 16, 1, -1),
+        "25": ("/i/teamlogos/nfl/500-dark/sf.png", 14, 0, -2, 16, 1, -1),
+        "26": ("/i/teamlogos/nfl/500-dark/sea.png", 14, 0, -2, 16, 1, -1),
+        "27": ("/i/teamlogos/nfl/500-dark/tb.png", 13, 1, -2, 16, -1, -2),
+        "28": ("/i/teamlogos/nfl/500-dark/wsh.png", 14, -1, -2, 16, -1, -1),
+        "29": ("/i/teamlogos/nfl/500-dark/car.png", 14, -1, -2, 16, 0, -1),
+        "30": ("/i/teamlogos/nfl/500-dark/jax.png", 14, 0, -2, 16, -1, -1),
+        "33": ("/i/teamlogos/nfl/500-dark/bal.png", 14, -1, -2, 16, -1, -1),
+        "34": ("/i/teamlogos/nfl/500-dark/hou.png", 12, 1, -1, 16, 1, -1),
+    },
+    "MLB": {
+        "1": ("/i/teamlogos/mlb/500-dark/bal.png", 12, 1, -1, 16, -1, -1),
+        "2": ("/i/teamlogos/mlb/500-dark/bos.png", 10, 1, 1, 14, 1, 1),
+        "3": ("/i/teamlogos/mlb/500-dark/laa.png", 12, 0, -1, 16, -1, -1),
+        "4": ("/i/teamlogos/mlb/500-dark/chw.png", 10, 1, 1, 14, 1, 1),
+        "5": ("/i/teamlogos/mlb/500-dark/cle.png", 10, 1, 1, 16, -1, -1),
+        "6": ("/i/teamlogos/mlb/500-dark/det.png", 12, 0, -1, 16, -1, -1),
+        "7": ("/i/teamlogos/mlb/500-dark/kc.png", 10, 1, 1, 14, 1, 1),
+        "8": ("/i/teamlogos/mlb/500-dark/mil.png", 10, 1, 1, 14, 1, 1),
+        "9": ("/i/teamlogos/mlb/500-dark/min.png", 10, 1, 1, 14, 1, 1),
+        "10": ("/i/teamlogos/mlb/500-dark/nyy.png", 12, 0, -1, 16, 0, -1),
+        "11": ("/i/teamlogos/mlb/500-dark/ath.png", 14, -1, -2, 16, -1, -1),
+        "12": ("/i/teamlogos/mlb/500-dark/sea.png", 10, 1, 1, 14, 1, 1),
+        "13": ("/i/teamlogos/mlb/500-dark/tex.png", 10, 1, 1, 14, 1, 1),
+        "14": ("/i/teamlogos/mlb/500-dark/tor.png", 14, -1, -2, 16, -1, -1),
+        "15": ("/i/teamlogos/mlb/500-dark/atl.png", 12, 1, -1, 16, 1, -1),
+        "16": ("/i/teamlogos/mlb/500-dark/chc.png", 10, 2, 1, 14, 2, 1),
+        "17": ("/i/teamlogos/mlb/500-dark/cin.png", 14, -1, -2, 16, -1, -1),
+        "18": ("/i/teamlogos/mlb/500-dark/hou.png", 10, 2, 1, 14, 2, 1),
+        "19": ("/i/teamlogos/mlb/500-dark/lad.png", 10, 1, 1, 14, 1, 1),
+        "20": ("/i/teamlogos/mlb/500-dark/wsh.png", 10, 2, 1, 14, 2, 1),
+        "21": ("/i/teamlogos/mlb/500-dark/nym.png", 10, 1, 1, 14, 1, 1),
+        "22": ("/i/teamlogos/mlb/500-dark/phi.png", 10, 1, 1, 14, 1, 1),
+        "23": ("/i/teamlogos/mlb/500-dark/pit.png", 12, 0, -1, 16, -1, -1),
+        "24": ("/i/teamlogos/mlb/500-dark/stl.png", 10, 1, 1, 14, 1, 1),
+        "25": ("/i/teamlogos/mlb/500-dark/sd.png", 10, 1, 1, 14, 1, 1),
+        "26": ("/i/teamlogos/mlb/500-dark/sf.png", 10, 1, 1, 14, 1, 1),
+        "27": ("/i/teamlogos/mlb/500-dark/col.png", 10, 2, 1, 14, 1, 1),
+        "28": ("/i/teamlogos/mlb/500-dark/mia.png", 12, 0, -1, 16, -1, -1),
+        "29": ("/i/teamlogos/mlb/500-dark/ari.png", 12, 0, -1, 16, -1, -1),
+        "30": ("/i/teamlogos/mlb/500-dark/tb.png", 12, 1, -1, 16, 1, -1),
+    },
+    "NHL": {
+        "1": ("/i/teamlogos/nhl/500-dark/bos.png", 10, 2, 1, 14, 2, 1),
+        "2": ("/i/teamlogos/nhl/500-dark/buf.png", 10, 2, 1, 14, 2, 1),
+        "3": ("/i/teamlogos/nhl/500-dark/cgy.png", 12, 0, -1, 16, -1, -1),
+        "4": ("/i/teamlogos/nhl/500-dark/chi.png", 12, 1, -1, 16, 1, -1),
+        "5": ("/i/teamlogos/nhl/500-dark/det.png", 14, 0, -2, 16, 1, -1),
+        "6": ("/i/teamlogos/nhl/500-dark/edm.png", 10, 2, 1, 14, 2, 1),
+        "7": ("/i/teamlogos/nhl/500-dark/car.png", 14, 0, -2, 16, 1, -1),
+        "8": ("/i/teamlogos/nhl/500-dark/la.png", 14, -1, -2, 16, -1, -1),
+        "9": ("/i/teamlogos/nhl/500-dark/dal.png", 14, -1, -2, 16, -1, -1),
+        "10": ("/i/teamlogos/nhl/500-dark/mtl.png", 14, 0, -2, 16, 1, -1),
+        "11": ("/i/teamlogos/nhl/500-dark/nj.png", 10, 2, 1, 14, 2, 1),
+        "12": ("/i/teamlogos/nhl/500-dark/nyi.png", 10, 2, 1, 16, 1, -1),
+        "13": ("/i/teamlogos/nhl/500-dark/nyr.png", 10, 1, 1, 16, -1, -1),
+        "14": ("/i/teamlogos/nhl/500-dark/ott.png", 14, -1, -2, 16, -1, -1),
+        "15": ("/i/teamlogos/nhl/500-dark/phi.png", 14, 0, -2, 16, 1, -1),
+        "16": ("/i/teamlogos/nhl/500-dark/pit.png", 12, 0, -1, 16, -1, -1),
+        "17": ("/i/teamlogos/nhl/500-dark/col.png", 13, -1, -2, 16, -1, -1),
+        "18": ("/i/teamlogos/nhl/500-dark/sj.png", 13, -1, -2, 16, -1, -1),
+        "19": ("/i/teamlogos/nhl/500-dark/stl.png", 14, -1, -2, 16, -1, -1),
+        "20": ("/i/teamlogos/nhl/500-dark/tb.png", 13, 1, -1, 16, 1, -1),
+        "21": ("/i/teamlogos/nhl/500-dark/tor.png", 12, 0, -1, 16, -1, -1),
+        "22": ("/i/teamlogos/nhl/500-dark/van.png", 10, 2, 1, 16, 1, -1),
+        "23": ("/i/teamlogos/nhl/500-dark/wsh.png", 14, 0, -2, 16, -1, -1),
+        "25": ("/i/teamlogos/nhl/500-dark/ana.png", 12, 1, -1, 16, -1, -1),
+        "26": ("/i/teamlogos/nhl/500-dark/fla.png", 10, 1, 1, 14, 1, 1),
+        "27": ("/i/teamlogos/nhl/500-dark/nsh.png", 14, -1, -2, 16, -1, -1),
+        "28": ("/i/teamlogos/nhl/500-dark/wpg.png", 10, 2, 1, 14, 2, 1),
+        "29": ("/i/teamlogos/nhl/500-dark/cbj.png", 14, 0, -2, 16, 1, -1),
+        "30": ("/i/teamlogos/nhl/500-dark/min.png", 14, -1, -2, 16, -1, -1),
+        "37": ("/i/teamlogos/nhl/500-dark/vgk.png", 12, 0, -1, 16, -1, -1),
+        "124292": ("/i/teamlogos/nhl/500-dark/sea.png", 10, 1, 1, 16, -1, -1),
+        "129764": ("/i/teamlogos/nhl/500-dark/utah.png", 14, -1, -2, 16, -1, -1),
+    },
+    "CFB": {
+        "2": ("/i/teamlogos/ncaa/500-dark/2.png", 12, 1, -1, 16, 1, -1),
+        "5": ("/i/teamlogos/ncaa/500-dark/5.png", 13, 1, -1, 16, 1, -1),
+        "6": ("/i/teamlogos/ncaa/500-dark/6.png", 14, 0, -2, 16, 1, -1),
+        "8": ("/i/teamlogos/ncaa/500-dark/8.png", 14, -1, -2, 16, -1, -1),
+        "9": ("/i/teamlogos/ncaa/500-dark/9.png", 12, 0, -1, 16, -1, -1),
+        "12": ("/i/teamlogos/ncaa/500-dark/12.png", 12, 1, -1, 16, 1, -1),
+        "16": ("/i/teamlogos/ncaa/500-dark/16.png", 10, 2, 1, 14, 2, 1),
+        "21": ("/i/teamlogos/ncaa/500-dark/21.png", 14, 0, -2, 16, -1, -1),
+        "23": ("/i/teamlogos/ncaa/500-dark/23.png", 10, 1, 1, 14, 1, 1),
+        "24": ("/i/teamlogos/ncaa/500-dark/24.png", 10, 1, 1, 14, 1, 1),
+        "25": ("/i/teamlogos/ncaa/500-dark/25.png", 14, -1, -2, 16, -1, -1),
+        "26": ("/i/teamlogos/ncaa/500-dark/26.png", 14, 0, -2, 16, 1, -1),
+        "30": ("/i/teamlogos/ncaa/500-dark/30.png", 10, 1, 1, 14, 1, 1),
+        "36": ("/i/teamlogos/ncaa/500-dark/36.png", 10, 2, 1, 14, 2, 1),
+        "38": ("/i/teamlogos/ncaa/500-dark/38.png", 14, 0, -2, 16, 1, -1),
+        "41": ("/i/teamlogos/ncaa/500-dark/41.png", 11, 1, -1, 16, -1, -1),
+        "48": ("/i/teamlogos/ncaa/500-dark/48.png", 14, 0, -2, 16, 1, -1),
+        "52": ("/i/teamlogos/ncaa/500-dark/52.png", 10, 2, 1, 14, 2, 1),
+        "55": ("/i/teamlogos/ncaa/500-dark/55.png", 14, 0, -2, 16, 1, -1),
+        "57": ("/i/teamlogos/ncaa/500-dark/57.png", 14, 0, -2, 16, 1, -1),
+        "58": ("/i/teamlogos/ncaa/500-dark/58.png", 14, 0, -2, 16, 1, -1),
+        "59": ("/i/teamlogos/ncaa/500-dark/59.png", 14, 0, -2, 16, 1, -1),
+        "61": ("/i/teamlogos/ncaa/500-dark/61.png", 14, 0, -2, 16, 1, -1),
+        "62": ("/i/teamlogos/ncaa/500-dark/62.png", 14, -1, -2, 16, -1, -1),
+        "66": ("/i/teamlogos/ncaa/500-dark/66.png", 14, 0, -2, 16, 1, -1),
+        "68": ("/i/teamlogos/ncaa/500-dark/68.png", 13, -1, -2, 16, -1, -1),
+        "77": ("/i/teamlogos/ncaa/500-dark/77.png", 10, 1, 1, 14, 1, 1),
+        "84": ("/i/teamlogos/ncaa/500-dark/84.png", 10, 1, 1, 14, 1, 1),
+        "87": ("/i/teamlogos/ncaa/500-dark/87.png", 12, 1, -1, 16, 1, -1),
+        "96": ("/i/teamlogos/ncaa/500-dark/96.png", 12, 1, -1, 16, 1, -1),
+        "97": ("/i/teamlogos/ncaa/500-dark/97.png", 12, 0, -1, 16, -1, -1),
+        "98": ("/i/teamlogos/ncaa/500-dark/98.png", 14, 0, -2, 16, 1, -1),
+        "99": ("/i/teamlogos/ncaa/500-dark/99.png", 14, 0, -2, 16, 1, -1),
+        "103": ("/i/teamlogos/ncaa/500-dark/103.png", 12, 1, -1, 16, -1, -1),
+        "113": ("/i/teamlogos/ncaa/500-dark/113.png", 12, 1, -1, 16, -1, -1),
+        "120": ("/i/teamlogos/ncaa/500-dark/120.png", 10, 1, 1, 14, 1, 1),
+        "127": ("/i/teamlogos/ncaa/500-dark/127.png", 10, 1, 1, 14, 1, 1),
+        "130": ("/i/teamlogos/ncaa/500-dark/130.png", 14, 0, -2, 16, 1, -1),
+        "135": ("/i/teamlogos/ncaa/500-dark/135.png", 14, 0, -2, 16, 1, -1),
+        "142": ("/i/teamlogos/ncaa/500-dark/142.png", 14, 0, -2, 16, 1, -1),
+        "145": ("/i/teamlogos/ncaa/500-dark/145.png", 12, 1, -1, 16, 1, -1),
+        "150": ("/i/teamlogos/ncaa/500-dark/150.png", 12, 0, -1, 16, -1, -1),
+        "151": ("/i/teamlogos/ncaa/500-dark/151.png", 10, 1, 1, 14, 1, 1),
+        "152": ("/i/teamlogos/ncaa/500-dark/152.png", 10, 1, 1, 16, -1, -1),
+        "153": ("/i/teamlogos/ncaa/500-dark/153.png", 14, 0, -2, 16, 1, -1),
+        "154": ("/i/teamlogos/ncaa/500-dark/154.png", 14, -1, -2, 16, -1, -1),
+        "158": ("/i/teamlogos/ncaa/500-dark/158.png", 10, 2, 1, 14, 2, 1),
+        "164": ("/i/teamlogos/ncaa/500-dark/164.png", 12, 1, -1, 16, 1, -1),
+        "166": ("/i/teamlogos/ncaa/500-dark/166.png", 14, 0, -2, 16, -1, -1),
+        "167": ("/i/teamlogos/ncaa/500-dark/167.png", 10, 1, 1, 14, 1, 1),
+        "183": ("/i/teamlogos/ncaa/500-dark/183.png", 10, 1, 1, 14, 1, 1),
+        "189": ("/i/teamlogos/ncaa/500-dark/189.png", 12, 1, -1, 16, -1, -1),
+        "193": ("/i/teamlogos/ncaa/500-dark/193.png", 14, -1, -2, 16, -1, -1),
+        "194": ("/i/teamlogos/ncaa/500-dark/194.png", 10, 2, 1, 14, 2, 1),
+        "195": ("/i/teamlogos/ncaa/500-dark/195.png", 14, 0, -2, 16, 1, -1),
+        "197": ("/i/teamlogos/ncaa/500-dark/197.png", 14, -1, -2, 16, -1, -1),
+        "201": ("/i/teamlogos/ncaa/500-dark/201.png", 10, 1, 1, 14, 1, 1),
+        "202": ("/i/teamlogos/ncaa/500-dark/202.png", 14, -1, -2, 16, -1, -1),
+        "204": ("/i/teamlogos/ncaa/500-dark/204.png", 14, -1, -2, 16, -1, -1),
+        "213": ("/i/teamlogos/ncaa/500-dark/213.png", 14, 0, -2, 16, 1, -1),
+        "218": ("/i/teamlogos/ncaa/500-dark/218.png", 10, 1, 1, 14, 1, 1),
+        "221": ("/i/teamlogos/ncaa/500-dark/221.png", 14, 0, -2, 16, 1, -1),
+        "228": ("/i/teamlogos/ncaa/500-dark/228.png", 12, 1, -1, 16, 1, -1),
+        "235": ("/i/teamlogos/ncaa/500-dark/235.png", 12, 1, -1, 16, 1, -1),
+        "238": ("/i/teamlogos/ncaa/500-dark/238.png", 14, -1, -2, 16, -1, -1),
+        "239": ("/i/teamlogos/ncaa/500-dark/239.png", 10, 1, 1, 14, 1, 1),
+        "242": ("/i/teamlogos/ncaa/500-dark/242.png", 12, 1, -1, 16, -1, -1),
+        "245": ("/i/teamlogos/ncaa/500-dark/245.png", 12, 0, -1, 16, 1, -1),
+        "248": ("/i/teamlogos/ncaa/500-dark/248.png", 10, 2, 1, 16, 1, -1),
+        "249": ("/i/teamlogos/ncaa/500-dark/249.png", 10, 2, 1, 14, 2, 1),
+        "251": ("/i/teamlogos/ncaa/500-dark/251.png", 14, -1, -2, 16, -1, -1),
+        "252": ("/i/teamlogos/ncaa/500-dark/252.png", 14, 0, -2, 16, 1, -1),
+        "254": ("/i/teamlogos/ncaa/500-dark/254.png", 12, 1, -1, 16, 1, -1),
+        "256": ("/i/teamlogos/ncaa/500-dark/256.png", 14, 0, -2, 16, 1, -1),
+        "258": ("/i/teamlogos/ncaa/500-dark/258.png", 14, -1, -2, 16, -1, -1),
+        "259": ("/i/teamlogos/ncaa/500-dark/259.png", 14, -1, -2, 16, -1, -1),
+        "264": ("/i/teamlogos/ncaa/500-dark/264.png", 14, 0, -2, 16, 1, -1),
+        "265": ("/i/teamlogos/ncaa/500-dark/265.png", 12, 0, -1, 16, -1, -1),
+        "275": ("/i/teamlogos/ncaa/500-dark/275.png", 10, 2, 1, 14, 2, 1),
+        "276": ("/i/teamlogos/ncaa/500-dark/276.png", 14, 0, -3, 16, 1, -1),
+        "277": ("/i/teamlogos/ncaa/500-dark/277.png", 12, 1, -1, 16, 1, -1),
+        "278": ("/i/teamlogos/ncaa/500-dark/278.png", 14, 0, -2, 16, 1, -1),
+        "290": ("/i/teamlogos/ncaa/500-dark/290.png", 14, -1, -2, 16, -1, -1),
+        "295": ("/i/teamlogos/ncaa/500-dark/295.png", 12, 1, -1, 16, 1, -1),
+        "309": ("/i/teamlogos/ncaa/500-dark/309.png", 14, 0, -2, 16, 1, -1),
+        "324": ("/i/teamlogos/ncaa/500-dark/324.png", 10, 1, 1, 14, 1, 1),
+        "326": ("/i/teamlogos/ncaa/500-dark/326.png", 12, 0, -1, 16, -1, -1),
+        "328": ("/i/teamlogos/ncaa/500-dark/328.png", 14, 0, -2, 16, 1, -1),
+        "333": ("/i/teamlogos/ncaa/500-dark/333.png", 10, 2, 1, 16, 1, -1),
+        "338": ("/i/teamlogos/ncaa/500-dark/338.png", 12, 0, -1, 16, -1, -1),
+        "344": ("/i/teamlogos/ncaa/500-dark/344.png", 14, -1, -2, 16, -1, -1),
+        "349": ("/i/teamlogos/ncaa/500-dark/349.png", 10, 1, 1, 14, 1, 1),
+        "356": ("/i/teamlogos/ncaa/500-dark/356.png", 10, 1, 1, 14, 1, 1),
+        "2005": ("/i/teamlogos/ncaa/500-dark/2005.png", 10, 2, 1, 14, 2, 1),
+        "2006": ("/i/teamlogos/ncaa/500-dark/2006.png", 14, -1, -2, 16, -1, -1),
+        "2026": ("/i/teamlogos/ncaa/500-dark/2026.png", 10, 1, 1, 14, 1, 1),
+        "2032": ("/i/teamlogos/ncaa/500-dark/2032.png", 10, 2, 1, 15, 0, -1),
+        "2050": ("/i/teamlogos/ncaa/500-dark/2050.png", 12, 0, -1, 16, -1, -1),
+        "2084": ("/i/teamlogos/ncaa/500-dark/2084.png", 12, 1, -1, 16, 1, -1),
+        "2116": ("/i/teamlogos/ncaa/500-dark/2116.png", 14, -1, -2, 16, -1, -1),
+        "2117": ("/i/teamlogos/ncaa/500-dark/2117.png", 14, -1, -2, 16, -1, -1),
+        "2132": ("/i/teamlogos/ncaa/500-dark/2132.png", 12, 0, -1, 16, 0, -1),
+        "2199": ("/i/teamlogos/ncaa/500-dark/2199.png", 10, 1, 1, 14, 1, 1),
+        "2226": ("/i/teamlogos/ncaa/500-dark/2226.png", 14, 0, -2, 16, 1, -1),
+        "2229": ("/i/teamlogos/ncaa/500-dark/2229.png", 10, 1, 1, 14, 1, 1),
+        "2247": ("/i/teamlogos/ncaa/500-dark/2247.png", 14, 0, -2, 16, -1, -1),
+        "2294": ("/i/teamlogos/ncaa/500-dark/2294.png", 14, -1, -2, 16, -1, -1),
+        "2305": ("/i/teamlogos/ncaa/500-dark/2305.png", 12, 1, -1, 16, -1, -1),
+        "2306": ("/i/teamlogos/ncaa/500-dark/2306.png", 14, 0, -2, 16, 1, -1),
+        "2309": ("/i/teamlogos/ncaa/500-dark/2309.png", 14, 0, -2, 16, 1, -1),
+        "2335": ("/i/teamlogos/ncaa/500-dark/2335.png", 12, 1, -1, 16, -1, -1),
+        "2348": ("/i/teamlogos/ncaa/500-dark/2348.png", 12, 1, -1, 16, 1, -1),
+        "2390": ("/i/teamlogos/ncaa/500-dark/2390.png", 14, 0, -2, 16, 1, -1),
+        "2393": ("/i/teamlogos/ncaa/500-dark/2393.png", 14, 0, -2, 16, -1, -1),
+        "2426": ("/i/teamlogos/ncaa/500-dark/2426.png", 12, 1, -1, 16, -1, -1),
+        "2429": ("/i/teamlogos/ncaa/500-dark/2429.png", 10, 1, 1, 14, 1, 1),
+        "2433": ("/i/teamlogos/ncaa/500-dark/2433.png", 14, -1, -3, 16, -1, -1),
+        "2439": ("/i/teamlogos/ncaa/500-dark/2439.png", 14, 0, -2, 16, 1, -1),
+        "2440": ("/i/teamlogos/ncaa/500-dark/2440.png", 14, 0, -2, 16, -1, -1),
+        "2449": ("/i/teamlogos/ncaa/500-dark/2449.png", 14, -1, -2, 16, -1, -1),
+        "2459": ("/i/teamlogos/ncaa/500-dark/2459.png", 12, 1, -1, 16, -1, -1),
+        "2483": ("/i/teamlogos/ncaa/500-dark/2483.png", 12, 1, -1, 16, 1, -1),
+        "2509": ("/i/teamlogos/ncaa/500-dark/2509.png", 14, -1, -2, 16, -1, -1),
+        "2534": ("/i/teamlogos/ncaa/500-dark/2534.png", 14, -1, -2, 16, -1, -1),
+        "2567": ("/i/teamlogos/ncaa/500-dark/2567.png", 14, 0, -3, 16, 1, -1),
+        "2572": ("/i/teamlogos/ncaa/500-dark/2572.png", 14, -1, -2, 16, -1, -1),
+        "2579": ("/i/teamlogos/ncaa/500-dark/2579.png", 10, 1, 1, 14, 1, 1),
+        "2623": ("/i/teamlogos/ncaa/500-dark/2623.png", 12, 1, -1, 16, -1, -1),
+        "2628": ("/i/teamlogos/ncaa/500-dark/2628.png", 14, 0, -2, 16, 1, -1),
+        "2633": ("/i/teamlogos/ncaa/500-dark/2633.png", 10, 2, 1, 14, 2, 1),
+        "2636": ("/i/teamlogos/ncaa/500-dark/2636.png", 14, -1, -2, 16, -1, -1),
+        "2638": ("/i/teamlogos/ncaa/500-dark/2638.png", 14, 0, -2, 16, 1, -1),
+        "2641": ("/i/teamlogos/ncaa/500-dark/2641.png", 10, 1, 1, 14, 1, 1),
+        "2649": ("/i/teamlogos/ncaa/500-dark/2649.png", 14, -1, -2, 16, -1, -1),
+        "2653": ("/i/teamlogos/ncaa/500-dark/2653.png", 10, 1, 1, 14, 1, 1),
+        "2655": ("/i/teamlogos/ncaa/500-dark/2655.png", 14, 0, -2, 16, 1, -1),
+        "2711": ("/i/teamlogos/ncaa/500-dark/2711.png", 14, -1, -2, 16, -1, -1),
+        "2751": ("/i/teamlogos/ncaa/500-dark/2751.png", 10, 1, 1, 14, 1, 1),
+    },
+    "NWSL": {
+        "15360": ("/i/teamlogos/soccer/500-dark/15360.png", 10, 1, 1, 14, 1, 1),
+        "15362": ("/i/teamlogos/soccer/500-dark/15362.png", 10, 2, 1, 14, 2, 1),
+        "15363": ("/i/teamlogos/soccer/500-dark/15363.png", 12, 0, -1, 16, -1, -1),
+        "15364": ("/i/teamlogos/soccer/500-dark/15364.png", 12, 0, -1, 16, -1, -2),
+        "15365": ("/i/teamlogos/soccer/500-dark/15365.png", 12, 0, -1, 16, -1, -1),
+        "15366": ("/i/teamlogos/soccer/500-dark/15366.png", 10, 1, 1, 16, -1, -1),
+        "17346": ("/i/teamlogos/soccer/500-dark/17346.png", 12, 0, -1, 16, -1, -1),
+        "18206": ("/i/teamlogos/soccer/500-dark/18206.png", 10, 2, 1, 14, 2, 1),
+        "19141": ("/i/teamlogos/soccer/500-dark/19141.png", 12, 0, -1, 16, 0, -1),
+        "20905": ("/i/teamlogos/soccer/500-dark/20905.png", 10, 2, 1, 14, 2, 1),
+        "20907": ("/i/teamlogos/soccer/500-dark/20907.png", 10, 1, 1, 14, 1, 1),
+        "21422": ("/i/teamlogos/soccer/500-dark/21422.png", 11, 1, -1, 16, -1, -1),
+        "21423": ("/i/teamlogos/soccer/500-dark/21423.png", 10, 1, 1, 14, 1, 1),
+        "22187": ("/i/teamlogos/soccer/500-dark/22187.png", 10, 2, 1, 14, 2, 1),
+        "131562": ("/i/teamlogos/soccer/500-dark/131562.png", 10, 1, 1, 14, 1, 1),
+        "131563": ("/i/teamlogos/soccer/500-dark/131563.png", 10, 1, 1, 14, 1, 1),
+    },
 }
 # END GENERATED TEAMS
 
