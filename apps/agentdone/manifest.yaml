@@ -1,0 +1,6 @@
+---
+id: agent-done
+name: Agent Done
+summary: Coding agent finished
+desc: Shows when Claude Code (or another agent) finishes working or needs your input. Hidden unless there's a recent message.
+author: Jim Oxenhandler
