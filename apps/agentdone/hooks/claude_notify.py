@@ -26,7 +26,13 @@ import urllib.request
 
 ENV_FILE = pathlib.Path(os.environ.get("AGENT_NOTIFY_ENV", pathlib.Path.home() / ".config" / "agent-notify" / "env"))
 TIMEOUT_SECONDS = 3
-SUMMARY_CHARS = 90
+SUMMARY_CHARS = 200
+
+# Claude Code's idle reminder ("Claude is waiting for your input"), sent a
+# while after it finishes; it would overwrite the "done" message. Permission
+# prompts and other notifications still go through.
+IDLE_TYPES = ("idle_prompt",)
+IDLE_TEXT = "waiting for your input"
 USER_AGENT = "agent-done-hook/1.0"
 
 
@@ -44,13 +50,19 @@ def load_env():
 
 
 def clean(text):
-    """First non-empty line, without markdown markers, capped in length."""
+    """First paragraph as one line, without markdown markers, capped in length."""
+    lines = []
     for line in text.splitlines():
         line = re.sub(r"^\s*(#+|[-*>]|\d+\.)\s+", "", line)
         line = re.sub(r"[*`_]{1,3}", "", line).strip()
         if line:
-            return line if len(line) <= SUMMARY_CHARS else line[: SUMMARY_CHARS - 1].rstrip() + "…"
-    return ""
+            lines.append(line)
+        elif lines:
+            break  # end of the first paragraph
+    summary = " ".join(lines)
+    if len(summary) > SUMMARY_CHARS:
+        summary = summary[: SUMMARY_CHARS - 1].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return summary
 
 
 def last_assistant_text(transcript_path):
@@ -78,9 +90,16 @@ def last_assistant_text(transcript_path):
     return text
 
 
+def is_idle(event):
+    return event.get("notification_type") in IDLE_TYPES or IDLE_TEXT in event.get("message", "").lower()
+
+
 def payload(event):
+    """The message to push, or None if this event shouldn't replace the last one."""
     name = event.get("hook_event_name", "")
     if name == "Notification":
+        if is_idle(event):
+            return None
         kind, summary = "input", clean(event.get("message", "")) or "Needs your input"
     else:
         kind, summary = "done", clean(last_assistant_text(event.get("transcript_path", ""))) or "Finished"
@@ -113,8 +132,9 @@ def main():
         env = load_env()
         if not env.get("PUSH_URL") or not env.get("PUSH_TOKEN"):
             return
-        event = json.load(sys.stdin)
-        push(env, payload(event))
+        body = payload(json.load(sys.stdin))
+        if body:
+            push(env, body)
     except Exception:
         # Never let a notification problem affect Claude Code.
         pass
