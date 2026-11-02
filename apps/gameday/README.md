@@ -60,10 +60,13 @@ python3 tools/gen_teams.py
 ```
 
 Logo artwork fills its square very differently from team to team, so the
-generator measures each logo at the sizes the app uses and records the
-largest size whose artwork fits the cell with 1px clear above and below, plus
-the offset that centers the artwork. Teams without an entry (e.g. FCS
-opponents) fall back to a default size and position.
+generator renders every logo through pixlet at each candidate size and
+records, per logo, the largest size whose artwork fits the cell with 1px
+clear above and below (preferring one size smaller when that lets it center
+exactly, so stacked logos line up), plus the offset that centers the
+artwork. It needs Pillow and `pixlet` on PATH, and takes about a minute.
+Teams without an entry (e.g. FCS opponents) fall back to a default size and
+position.
 
 ## Local render
 

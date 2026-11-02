@@ -2,7 +2,7 @@
 """
 Regenerates the TEAMS and LOGO_FIT tables in ../gameday.star from ESPN.
 
-    pip install pillow
+    pip install pillow      # and pixlet on PATH
     python3 tools/gen_teams.py
 
 TEAMS feeds the settings dropdowns. College football is limited to FBS
@@ -12,17 +12,23 @@ filter).
 LOGO_FIT gives every team's logo the same visual size and center. Logo
 artwork fills its square very differently from team to team (a full-height
 shield vs. a short wide arrowhead), so one fixed size and offset can't work.
-For each logo cell the app uses, this picks the largest size whose artwork
-fits inside the cell with a 1px margin above and below, and the offset that centers the
-artwork (not the image) in the cell. The app fetches each original logo and
-lets pixlet scale it; artwork bounds are measured on the original scaled the
-same way.
+Every logo is rendered through pixlet (so the measurement is exactly what the
+device draws) at each candidate size. For each logo cell, the largest size
+whose artwork fits with a 1px margin above and below is chosen, preferring
+one a size smaller if that makes the artwork width match the cell's parity
+(exact centering, so stacked logos line up), with the offset that centers the
+artwork. Requires pixlet on PATH.
 """
 
-import io
+import functools
+import http.server
 import json
 import pathlib
 import re
+import shutil
+import subprocess
+import tempfile
+import threading
 import urllib.error
 import urllib.request
 
@@ -53,8 +59,14 @@ MARGIN_Y = 1
 MARGIN_X = 0
 MIN_SIZE = 8
 
-# Alpha at or above this counts as visible artwork on the LEDs.
-ALPHA_VISIBLE = 64
+# A rendered pixel brighter than this (max channel) counts as artwork. Fainter
+# anti-aliased edge pixels don't read as part of the logo on the LEDs.
+VISIBLE = 40
+
+# How much smaller than the largest fitting size a logo may get in exchange
+# for exact horizontal centering (artwork width with the same parity as the
+# cell), so logos line up over each other.
+MAX_SHRINK_FOR_EXACT = 1
 
 BEGIN = "# BEGIN GENERATED TEAMS (tools/gen_teams.py)"
 END = "# END GENERATED TEAMS"
@@ -92,41 +104,110 @@ def logo_path(team):
     return href[len(CDN):] if href.startswith(CDN) else ""
 
 
-_originals = {}
+class PixletMeasurer:
+    """Measures logo artwork exactly as pixlet draws it.
 
-
-def artwork(path, size):
-    """Bounding box (x0, y0, x1, y1 inclusive) of visible artwork at size.
-
-    The app fetches the original logo and lets pixlet scale it, so measure
-    the original scaled the same way (Lanczos is a close match). ESPN's
-    resizer is not used: it crops/shifts small logos by a pixel or so.
+    Originals are downloaded once and served locally; each batch of logos is
+    rendered by pixlet at a given size in a grid of tiles, and the lit pixels
+    of each tile give the artwork's bounding box.
     """
-    if path not in _originals:
-        with urllib.request.urlopen(CDN + path, timeout=30) as resp:
-            _originals[path] = Image.open(io.BytesIO(resp.read())).convert("RGBA")
-    im = _originals[path].resize((size, size), Image.LANCZOS)
-    box = im.split()[3].point(lambda v: 255 if v >= ALPHA_VISIBLE else 0).getbbox()
-    return (box[0], box[1], box[2] - 1, box[3] - 1) if box else None
+
+    TILE, COLS, ROWS = 16, 4, 2
+
+    def __init__(self):
+        self.pixlet = shutil.which("pixlet")
+        if not self.pixlet:
+            raise SystemExit("pixlet not found on PATH")
+        self.dir = pathlib.Path(tempfile.mkdtemp(prefix="gameday-logos-"))
+        self.names = {}
+
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+        handler = functools.partial(Quiet, directory=str(self.dir))
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.server.server_port}/"
+
+    def add(self, path):
+        if path in self.names:
+            return True
+        try:
+            with urllib.request.urlopen(CDN + path, timeout=30) as resp:
+                data = resp.read()
+        except urllib.error.URLError as err:
+            print(f"  skip {path}: {err}")
+            return False
+        name = f"{len(self.names)}.png"
+        (self.dir / name).write_bytes(data)
+        self.names[path] = name
+        return True
+
+    def measure(self, paths, size):
+        """{path: (x0, y0, x1, y1) inclusive, or None} at size x size."""
+        out = {}
+        per = self.COLS * self.ROWS
+        for start in range(0, len(paths), per):
+            batch = paths[start:start + per]
+            urls = [self.base + self.names[p] for p in batch]
+            app = self.dir / f"m{start}" / "measure.star"
+            app.parent.mkdir(exist_ok=True)
+            app.write_text(
+                'load("http.star", "http")\n'
+                'load("render.star", "render")\n'
+                f"URLS = {json.dumps(urls)}\n"
+                "def main():\n"
+                "    tiles = [render.Box(width = 64, height = 32)]\n"
+                "    for i, u in enumerate(URLS):\n"
+                f"        img = render.Image(src = http.get(u).body(), width = {size}, height = {size})\n"
+                f"        tiles.append(render.Padding(pad = ((i % {self.COLS}) * {self.TILE}, (i // {self.COLS}) * {self.TILE}, 0, 0), child = img))\n"
+                "    return render.Root(child = render.Stack(children = tiles))\n"
+            )
+            gif = app.with_suffix(".gif")
+            subprocess.run([self.pixlet, "render", str(app), "--gif", "-o", str(gif)], check=True, capture_output=True)
+            im = Image.open(gif).convert("RGB")
+            for k, p in enumerate(batch):
+                ox, oy = (k % self.COLS) * self.TILE, (k // self.COLS) * self.TILE
+                lit = [(x, y) for y in range(size) for x in range(size) if max(im.getpixel((ox + x, oy + y))) > VISIBLE]
+                out[p] = (min(x for x, _ in lit), min(y for _, y in lit), max(x for x, _ in lit), max(y for _, y in lit)) if lit else None
+        return out
 
 
-def round_half_up(x):
-    return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+def fit(boxes, cell):
+    """(size, x, y): logo size and top-left position in the cell.
 
-
-def fit(path, cell):
-    """(size, x, y): logo size and top-left position in the cell."""
+    boxes maps size -> artwork box. Takes the largest size whose artwork fits
+    the cell's margins, but prefers one up to MAX_SHRINK_FOR_EXACT smaller
+    whose artwork width has the cell's parity, so it sits exactly on the
+    cell's vertical center line and stacked logos line up. Exact vertical
+    centering is taken too when it comes at the same size.
+    """
     w, h, largest = cell
+    fitting = []  # (size, box, exact horizontally, exact vertically), largest first
     for size in range(largest, MIN_SIZE - 1, -1):
-        box = artwork(path, size)
+        box = boxes.get(size)
         if not box:
-            return None
+            continue
         x0, y0, x1, y1 = box
-        if x1 - x0 + 1 <= w - 2 * MARGIN_X and y1 - y0 + 1 <= h - 2 * MARGIN_Y:
-            x = round_half_up((w - 1) / 2 - (x0 + x1) / 2)
-            y = round_half_up((h - 1) / 2 - (y0 + y1) / 2)
-            return (size, x, y)
-    return None
+        aw, ah = x1 - x0 + 1, y1 - y0 + 1
+        if aw <= w - 2 * MARGIN_X and ah <= h - 2 * MARGIN_Y:
+            fitting.append((size, box, (w - aw) % 2 == 0, (h - ah) % 2 == 0))
+    if not fitting:
+        return None
+    best = fitting[0][0]
+    near = [f for f in fitting if f[0] >= best - MAX_SHRINK_FOR_EXACT]
+    exact_x = [f for f in near if f[2]]
+    if exact_x:
+        top = exact_x[0][0]
+        size, box, _, _ = next((f for f in exact_x if f[0] == top and f[3]), exact_x[0])
+    else:
+        size, box, _, _ = fitting[0]
+    x0, y0, x1, y1 = box
+    # Floor consistently, so any leftover half pixel always goes the same way.
+    x = (w - (x1 - x0 + 1)) // 2 - x0
+    y = (h - (y1 - y0 + 1)) // 2 - y0
+    return (size, x, y)
 
 
 def main():
@@ -139,20 +220,28 @@ def main():
         teams.sort(key=lambda t: t["displayName"])
         teams_out[key] = [(t["id"], t["displayName"]) for t in teams]
 
+        fit_out[label] = [(t["id"], logo_path(t)) for t in teams if logo_path(t)]
+
+    # Measure every logo at every candidate size through pixlet.
+    measurer = PixletMeasurer()
+    paths = sorted({p for logos in fit_out.values() for _, p in logos if measurer.add(p)})
+    sizes = range(MIN_SIZE, max(c[2] for c in CELLS.values()) + 1)
+    boxes = {}
+    for size in sizes:
+        for p, box in measurer.measure(paths, size).items():
+            boxes.setdefault(p, {})[size] = box
+        print(f"measured {len(paths)} logos at {size}px")
+
+    for label, logos in list(fit_out.items()):
         fits = {}
-        for t in teams:
-            p = logo_path(t)
-            if not p:
+        for tid, p in logos:
+            if p not in boxes:
                 continue
-            try:
-                stacked, live = fit(p, CELLS["stacked"]), fit(p, CELLS["live"])
-            except urllib.error.URLError as err:
-                print(f"  skip {t['abbreviation']}: {err}")
-                continue
+            stacked, live = fit(boxes[p], CELLS["stacked"]), fit(boxes[p], CELLS["live"])
             if stacked and live:
-                fits[t["id"]] = (p,) + stacked + live
+                fits[tid] = (p,) + stacked + live
         fit_out[label] = fits
-        print(f"{key}: {len(teams)} teams, {len(fits)} logos fitted")
+        print(f"{label}: {len(logos)} logos, {len(fits)} fitted")
 
     lines = [BEGIN, "TEAMS = {"]
     for key, teams in teams_out.items():
