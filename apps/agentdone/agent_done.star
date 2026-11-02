@@ -28,12 +28,13 @@ EVENTS = {
     "input": ("INPUT", "#F6BF26"),
 }
 
-# Body layout under the header (rows 9-31): margin, project line, gap,
-# summary line, margin.
-TOP_MARGIN = 2
-PROJECT_HEIGHT = 11
-GAP_HEIGHT = 3
-SUMMARY_HEIGHT = 6
+# Body layout under the header (rows 9-31): margin, project line (icon
+# height), gap, then two lines of summary that scroll upward if longer.
+TOP_MARGIN = 1
+PROJECT_HEIGHT = 9
+GAP_HEIGHT = 1
+SUMMARY_LINE_HEIGHT = 6
+SUMMARY_HEIGHT = 2 * SUMMARY_LINE_HEIGHT
 CONTENT_WIDTH = WIDTH - 2
 
 # Claude spark, 9x9 pixel art in Claude orange.
@@ -137,12 +138,18 @@ def project_line(msg):
     return render.Row(children = [icon, render.Box(width = ICON_GAP, height = 1), text])
 
 def summary_line(summary):
+    """Wrapped to the screen width; scrolls upward (and loops) when it's
+    longer than SUMMARY_HEIGHT allows. Marquee only scrolls if it has to."""
     if not summary:
         return render.Box(width = CONTENT_WIDTH, height = SUMMARY_HEIGHT)
-    text = render.Text(summary, font = "tom-thumb", color = SUMMARY_COLOR)
-    if text_width(summary, "tom-thumb") > CONTENT_WIDTH:
-        return render.Marquee(width = CONTENT_WIDTH, offset_start = CONTENT_WIDTH // 2, child = text)
-    return render.Box(width = CONTENT_WIDTH, height = SUMMARY_HEIGHT, child = render.Row(expanded = True, children = [text]))
+    text = render.WrappedText(summary, width = CONTENT_WIDTH, font = "tom-thumb", color = SUMMARY_COLOR)
+    return render.Marquee(
+        width = CONTENT_WIDTH,
+        height = SUMMARY_HEIGHT,
+        scroll_direction = "vertical",
+        offset_start = 0,
+        child = text,
+    )
 
 def pixel_art(rows, color):
     lines = []
