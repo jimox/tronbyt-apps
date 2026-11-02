@@ -27,6 +27,7 @@ import urllib.request
 ENV_FILE = pathlib.Path(os.environ.get("AGENT_NOTIFY_ENV", pathlib.Path.home() / ".config" / "agent-notify" / "env"))
 TIMEOUT_SECONDS = 3
 SUMMARY_CHARS = 90
+USER_AGENT = "agent-done-hook/1.0"
 
 
 def load_env():
@@ -93,7 +94,13 @@ def payload(event):
 
 
 def push(env, body):
-    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + env["PUSH_TOKEN"]}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + env["PUSH_TOKEN"],
+        # Cloudflare's bot protection rejects Python's default user agent
+        # (error 1010).
+        "User-Agent": USER_AGENT,
+    }
     if env.get("CF_ACCESS_CLIENT_ID") and env.get("CF_ACCESS_CLIENT_SECRET"):
         headers["CF-Access-Client-Id"] = env["CF_ACCESS_CLIENT_ID"]
         headers["CF-Access-Client-Secret"] = env["CF_ACCESS_CLIENT_SECRET"]
